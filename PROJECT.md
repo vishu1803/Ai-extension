@@ -1,13 +1,13 @@
 # PROJECT.md — AI Context Tracker
 
 > **Last Updated:** July 13, 2026  
-> **Status:** Architecture Design Phase
+> **Status:** UX Design Phase
 
 ---
 
 ## Current Phase
 
-📐 **Architecture Design** — Complete. Awaiting founder approval before implementation.
+🎨 **UX Design** — Complete. Awaiting founder approval before implementation.
 
 ## Architecture
 
@@ -72,6 +72,11 @@ ai-context-tracker/
 | 15 | Separate selectors.ts per adapter | 2026-07-13 | DOM changes → edit 1 file |
 | 16 | Incremental tokenization | 2026-07-13 | Only re-count changed messages |
 | 17 | Bundle size < 15KB per content script | 2026-07-13 | Performance budget for injected code |
+| 18 | Dark-first design, auto theme detection | 2026-07-13 | AI platforms are predominantly dark; match host |
+| 19 | Glassmorphism for floating widget | 2026-07-13 | Blends with host page; modern 2026 aesthetic |
+| 20 | Lucide Icons (MIT, tree-shakeable) | 2026-07-13 | Open-source, consistent, < 500B per icon SVG |
+| 21 | Inter + JetBrains Mono typography | 2026-07-13 | Industry-standard readability; monospace for code |
+| 22 | WCAG 2.2 AA as baseline | 2026-07-13 | Accessible by default; color-blind safe design |
 
 ## Completed Work
 
@@ -94,10 +99,30 @@ ai-context-tracker/
   - [x] Performance budget
   - [x] Cross-browser strategy
   - [x] Future extensibility (plugin system)
+- [x] **Complete UX design specification**
+  - [x] 10 screen mockups generated (dark + light modes)
+  - [x] Popup: dark (healthy) + light (caution) variants
+  - [x] Dashboard side panel: dark + light with full metrics
+  - [x] Floating widget: 4 health states + expanded view
+  - [x] Settings page with sidebar navigation
+  - [x] Transfer summary dialog with markdown preview
+  - [x] Rolling summary screen with topic tags
+  - [x] Conversation history with platform filters
+  - [x] Snapshot manager with comparison feature
+  - [x] Notification cards: 4 severity levels
+  - [x] Onboarding welcome screen
+  - [x] Design system: color tokens, typography, spacing, shadows
+  - [x] Component library specifications (7 components)
+  - [x] Animation specs: 14 micro-interactions with CSS
+  - [x] Accessibility: WCAG 2.2 AA, ARIA patterns, color-blind safe
+  - [x] Responsive behavior rules
+  - [x] Icon system (Lucide)
+  - [x] Empty states (4 variants)
+  - [x] Keyboard shortcuts
 
 ## Pending Work
 
-- [ ] Founder review and approval of architecture
+- [ ] Founder review and approval of UX designs
 - [ ] Resolve open questions from product spec
 - [ ] Project scaffolding and build pipeline (Phase 1)
 - [ ] Implementation (Phases 1-7)
