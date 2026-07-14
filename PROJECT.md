@@ -1,13 +1,12 @@
 # PROJECT.md — AI Context Tracker
 
 > **Last Updated:** July 13, 2026  
-> **Status:** UX Design Phase
-
+> **Status:** Phase 3 (Core Foundation) Completed
 ---
 
 ## Current Phase
 
-🎨 **UX Design** — Complete. Awaiting founder approval before implementation.
+🧠 **Phase 3: Core Foundation** — Complete. Moving into Phase 4.
 
 ## Architecture
 
@@ -122,10 +121,100 @@ ai-context-tracker/
 
 ## Pending Work
 
-- [ ] Founder review and approval of UX designs
-- [ ] Resolve open questions from product spec
-- [ ] Project scaffolding and build pipeline (Phase 1)
-- [ ] Implementation (Phases 1-7)
+- [x] Founder review and approval of UX designs (Implied approved)
+- [x] Project scaffolding and build pipeline (Phase 1)
+  - [x] WXT with Preact config
+  - [x] Tailwind CSS v4 setup
+  - [x] ESlint (v8 fallback), Prettier, Husky, Commitlint
+  - [x] Vitest, Playwright setup
+  - [x] CI/CD Pipeline (GitHub Actions)
+
+- [x] Phase 2: User Interface Implementation
+  - [x] Shared Component Library (ContextMeter, HealthBadge, etc.)
+  - [x] Popup Dashboard
+  - [x] Side Panel Dashboard & Tabs
+  - [x] Shadow DOM Floating Widget
+  - [x] Settings Page
+
+- [x] Phase 3: Core Foundation Implementation
+  - [x] Type-safe Message Passing Layer
+  - [x] Storage Abstraction Layer (3-tier)
+  - [x] Background Service Worker (Event Router)
+  - [x] Context Tracker (Live Updates & Settings)
+  - [x] Custom Warning Thresholds (Caution/Warning/Critical)
+  - [x] Zustand State Connection
+  - [x] Manifest Permissions & WXT Build Verification
+
+- [x] Phase 4: Modular Token Engine implementation
+  - [x] Abstract `Tokenizer` interface with confidence scoring
+  - [x] Exact tokenization via `js-tiktoken` (o200k_base)
+  - [x] Heuristic tokenization via model-specific character ratios (Claude: 3.5, Gemini: 4.0)
+  - [x] Message-level and full-conversation token estimation
+  - [x] Remaining context tracking
+
+## Completed Features
+
+- [x] Phase 5: Platform Adapters Implementation
+  - [x] Core Detection Engine (`detectPlatform`)
+  - [x] Robust DOM Observation Engine (`RobustDOMEngine`)
+  - [x] SPA History API Interception for new conversations
+  - [x] `requestAnimationFrame` mutation batching for CPU optimization
+  - [x] Lazy-loading recovery via Map-based state tracking
+  - [x] Standardized `PlatformAdapter` interface
+  - [x] ChatGPT adapter (`data-message-author-role`)
+  - [x] Claude adapter (`.font-claude-message`)
+  - [x] Gemini adapter (`message-content`)
+  - [x] Grok adapter
+  - [x] Perplexity adapter
+
+- [x] Phase 6: Summary Engine Implementation
+  - [x] Structured internal summary representation
+  - [x] Incremental updates avoiding full conversation reprocessing
+  - [x] Fact, Bug, Task, API, and Architecture extraction heuristics
+  - [x] Current discussion topic tracking
+  - [x] Headless integration with background service worker
+
+- [x] Phase 7: Transfer Summary Engine & UI
+  - [x] Abstract `TransferEngine` generator
+  - [x] Markdown, Plain Text, and JSON formats
+  - [x] Prompt tailoring for ChatGPT, Claude, Gemini, Generic
+  - [x] Memory, Tasks, Bugs, and Files inclusion toggles
+  - [x] Next Prompt append
+  - [x] `TransferDialog` UI component with Live Preview
+  - [x] One-click Copy, Download, and Open Chat actions
+
+- [x] Phase 8: Alert Engine (Smart Context Switch)
+  - [x] Unintrusive Notification UI (`NotificationCard`)
+  - [x] Shadow DOM Integration (`NotificationManager`)
+  - [x] Context Warning triggers (Caution / Critical)
+  - [x] Auto-dismiss timers
+  - [x] Global kill-switch (`notificationsEnabled` toggle)
+  - [x] "Open New Chat" and "Generate Summary" Quick Actions
+  - [x] Beautiful slide-in and fade-out animations
+
+- [x] Phase 9: Snapshot Manager
+  - [x] Added `snapshots` array to AppState
+  - [x] Built `SnapshotManager` UI tab
+  - [x] Allows saving current context, summary, token usage, timestamp
+  - [x] Restoring snapshots overrides current working context
+  - [x] Search snapshots by name or project goal
+  - [x] Add and remove custom tags from snapshots
+
+- [x] Phase 10: Complete Settings Configuration
+  - [x] `SettingsManager` UI implemented
+  - [x] Configurable warning thresholds (sliders)
+  - [x] Theme settings (light/dark/system)
+  - [x] Privacy controls (history retention, analytics)
+  - [x] Backup & Restore JSON functionality
+  - [x] Export formats & Summary frequency selects
+  - [x] Reset to defaults capability
+  - [x] Global notifications toggle
+
+- [x] Phase 11: Profiling & Optimization
+  - [x] Fixed memory leak in engine tear down
+  - [x] Debounced MutationObserver from 60FPS to 250ms chunks (CPU/RAM boost)
+  - [x] Replaced broad object destructuring in Zustand with atomic selectors (fixing laggy re-renders)
+  - [x] Re-architected hooks for instant popup load times
 
 ## Known Issues
 
