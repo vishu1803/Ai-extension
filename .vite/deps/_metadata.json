@@ -1,0 +1,49 @@
+{
+  "hash": "ba407b34",
+  "configHash": "2b888238",
+  "lockfileHash": "c490fb4b",
+  "browserHash": "eb4d4f41",
+  "optimized": {
+    "preact": {
+      "src": "../../node_modules/preact/dist/preact.module.js",
+      "file": "preact.js",
+      "fileHash": "251591c2",
+      "needsInterop": false
+    },
+    "preact/jsx-runtime": {
+      "src": "../../node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js",
+      "file": "preact_jsx-runtime.js",
+      "fileHash": "e8f15749",
+      "needsInterop": false
+    },
+    "preact/jsx-dev-runtime": {
+      "src": "../../node_modules/preact/jsx-runtime/dist/jsxRuntime.module.js",
+      "file": "preact_jsx-dev-runtime.js",
+      "fileHash": "61d898e0",
+      "needsInterop": false
+    },
+    "preact/debug": {
+      "src": "../../node_modules/preact/debug/dist/debug.module.js",
+      "file": "preact_debug.js",
+      "fileHash": "63656bfd",
+      "needsInterop": false
+    },
+    "preact/devtools": {
+      "src": "../../node_modules/preact/devtools/dist/devtools.module.js",
+      "file": "preact_devtools.js",
+      "fileHash": "b3717435",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-IXCYKNWM": {
+      "file": "chunk-IXCYKNWM.js"
+    },
+    "chunk-JMNJEVZL": {
+      "file": "chunk-JMNJEVZL.js"
+    },
+    "chunk-3YGPVWHE": {
+      "file": "chunk-3YGPVWHE.js"
+    }
+  }
+}
