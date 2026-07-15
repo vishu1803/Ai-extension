@@ -1,5 +1,3 @@
-import { ChatMessage } from '../../adapters/engineTypes';
-
 export interface TokenResult {
   tokens: number;
   confidence: number; // 0.0 (pure guess) to 1.0 (exact calculation)
@@ -8,6 +6,8 @@ export interface TokenResult {
 
 export interface ConversationTokenEstimate {
   totalTokens: number;
+  totalInputTokens: number;
+  totalOutputTokens: number;
   remainingContext: number;
   confidence: number;
   messageEstimates: Record<string, TokenResult>;

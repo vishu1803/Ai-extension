@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect } from 'preact/hooks';
 import { useAppState } from '../hooks/useAppState';
 
 export function ThemeProvider({ children }: { children: preact.ComponentChildren }) {
@@ -6,7 +6,7 @@ export function ThemeProvider({ children }: { children: preact.ComponentChildren
 
   useEffect(() => {
     const root = document.documentElement;
-    
+
     const applyTheme = (t: 'dark' | 'light') => {
       if (t === 'dark') {
         root.classList.add('dark');
@@ -20,7 +20,7 @@ export function ThemeProvider({ children }: { children: preact.ComponentChildren
     if (theme === 'system') {
       const media = window.matchMedia('(prefers-color-scheme: dark)');
       applyTheme(media.matches ? 'dark' : 'light');
-      
+
       const listener = (e: MediaQueryListEvent) => applyTheme(e.matches ? 'dark' : 'light');
       media.addEventListener('change', listener);
       return () => media.removeEventListener('change', listener);
@@ -31,5 +31,17 @@ export function ThemeProvider({ children }: { children: preact.ComponentChildren
 
   // Provide theme via Tailwind dark mode class on document.documentElement
   // In Shadow DOM context, this component renders a wrapper div that holds the class.
-  return <div className={theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light'} style={{ height: '100%' }}>{children}</div>;
+  return (
+    <div
+      className={
+        theme === 'dark' ||
+        (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          ? 'dark'
+          : 'light'
+      }
+      style={{ height: '100%' }}
+    >
+      {children}
+    </div>
+  );
 }

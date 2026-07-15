@@ -11,6 +11,10 @@ export interface StructuredSummary {
   apis: string[];
   userPreferences: string[];
   currentDiscussion: string;
+  rankedSentences?: string[];
+  topicTags: string[];
+  lastUpdatedAt: number;
+  turnsCovered: number;
 }
 
 export const defaultSummary: StructuredSummary = {
@@ -25,5 +29,9 @@ export const defaultSummary: StructuredSummary = {
   links: [],
   apis: [],
   userPreferences: [],
-  currentDiscussion: ''
+  currentDiscussion: '',
+  rankedSentences: [],
+  topicTags: [],
+  lastUpdatedAt: 0,
+  turnsCovered: 0,
 };

@@ -28,7 +28,7 @@ export class TokenEngine {
         return geminiHeuristicTokenizer;
       default:
         // Default to a 4-char heuristic for unknown platforms
-        return geminiHeuristicTokenizer; 
+        return geminiHeuristicTokenizer;
     }
   }
 
@@ -39,11 +39,10 @@ export class TokenEngine {
     return this.activeTokenizer.countTokens(text);
   }
 
-  /**
-   * Estimates tokens for an entire conversation, returning live metrics and remaining context.
-   */
   public async estimateConversation(messages: ChatMessage[]): Promise<ConversationTokenEstimate> {
     let totalTokens = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
     let averageConfidence = 0;
     const messageEstimates: Record<string, TokenResult> = {};
 
@@ -53,6 +52,11 @@ export class TokenEngine {
       const result = await this.estimateMessage(msg.text);
       messageEstimates[msg.id] = result;
       totalTokens += result.tokens;
+      if (msg.role === 'user') {
+        totalInputTokens += result.tokens;
+      } else {
+        totalOutputTokens += result.tokens;
+      }
       averageConfidence += result.confidence;
     }
 
@@ -66,9 +70,11 @@ export class TokenEngine {
 
     return {
       totalTokens,
+      totalInputTokens,
+      totalOutputTokens,
       remainingContext,
       confidence: averageConfidence,
-      messageEstimates
+      messageEstimates,
     };
   }
 }

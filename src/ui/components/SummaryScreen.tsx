@@ -1,162 +1,249 @@
 import { useState, useMemo } from 'preact/hooks';
 import { useAppState } from '../hooks/useAppState';
-import { RefreshCw, Copy, Check, FileText, AlertCircle } from 'lucide-preact';
+import {
+  RefreshCw,
+  Copy,
+  FileText,
+  Target,
+  Code,
+  Bug,
+  ListTodo,
+  MessageSquare,
+} from 'lucide-preact';
 import { StructuredSummary } from '../../engines/summary/types';
+import { TransferSummaryModal } from './TransferSummaryModal';
+import { messaging } from '../../messaging/client';
 
 export function SummaryScreen() {
-  const currentSummary = useAppState(s => s.currentSummary) as StructuredSummary | null;
-  const stats = useAppState(s => s.stats);
-  const platform = useAppState(s => s.platform);
-  
-  const [copied, setCopied] = useState(false);
-  const [regenerating, setRegenerating] = useState(false);
+  const currentSummary = useAppState((s) => s.currentSummary) as StructuredSummary | null;
+  const stats = useAppState((s) => s.stats);
 
-  // Build display sections from the real summary data
+  const [regenerating, setRegenerating] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+
+  // Derive summary sections from live data
   const sections = useMemo(() => {
     if (!currentSummary) return [];
-    const s: { label: string; items: string[] }[] = [];
-    
-    if (currentSummary.projectGoal) s.push({ label: '🎯 Project Goal', items: [currentSummary.projectGoal] });
-    if (currentSummary.facts.length > 0) s.push({ label: '📋 Facts', items: currentSummary.facts });
-    if (currentSummary.architectureDecisions.length > 0) s.push({ label: '🏗️ Architecture Decisions', items: currentSummary.architectureDecisions });
-    if (currentSummary.filesCreated.length > 0) s.push({ label: '📁 Files Created', items: currentSummary.filesCreated });
-    if (currentSummary.completedTasks.length > 0) s.push({ label: '✅ Completed Tasks', items: currentSummary.completedTasks });
-    if (currentSummary.pendingTasks.length > 0) s.push({ label: '⏳ Pending Tasks', items: currentSummary.pendingTasks });
-    if (currentSummary.bugs.length > 0) s.push({ label: '🐛 Bugs', items: currentSummary.bugs });
-    if (currentSummary.links.length > 0) s.push({ label: '🔗 Links', items: currentSummary.links });
-    if (currentSummary.apis.length > 0) s.push({ label: '⚡ APIs', items: currentSummary.apis });
-    if (currentSummary.userPreferences.length > 0) s.push({ label: '⚙️ User Preferences', items: currentSummary.userPreferences });
-    if (currentSummary.currentDiscussion) s.push({ label: '💬 Current Discussion', items: [currentSummary.currentDiscussion] });
-    
-    return s;
+
+    const list: {
+      icon: preact.ComponentType<{ size?: number; style?: object; className?: string }>;
+      title: string;
+      items: string[];
+      color: string;
+    }[] = [];
+
+    // Project Goal
+    if (currentSummary.projectGoal) {
+      list.push({
+        icon: Target,
+        title: 'Project Goal',
+        items: [currentSummary.projectGoal],
+        color: '#22d3ee',
+      });
+    }
+
+    // Key Context Points (from TF-IDF ranking)
+    if (currentSummary.rankedSentences && currentSummary.rankedSentences.length > 0) {
+      list.push({
+        icon: MessageSquare,
+        title: 'Key Context Points',
+        items: currentSummary.rankedSentences.slice(0, 5),
+        color: '#3b82f6',
+      });
+    }
+
+    // Architecture Decisions
+    if (currentSummary.architectureDecisions.length > 0) {
+      list.push({
+        icon: Target,
+        title: 'Decisions Made',
+        items: currentSummary.architectureDecisions.slice(0, 5),
+        color: '#a855f7',
+      });
+    }
+
+    // Files Referenced
+    if (currentSummary.filesCreated.length > 0) {
+      list.push({
+        icon: Code,
+        title: 'Files Referenced',
+        items: currentSummary.filesCreated.slice(0, 8),
+        color: '#22c55e',
+      });
+    }
+
+    // Bugs
+    if (currentSummary.bugs.length > 0) {
+      list.push({
+        icon: Bug,
+        title: 'Issues Found',
+        items: currentSummary.bugs.slice(0, 5),
+        color: '#ef4444',
+      });
+    }
+
+    // Pending Tasks
+    if (currentSummary.pendingTasks.length > 0) {
+      list.push({
+        icon: ListTodo,
+        title: 'Pending Tasks',
+        items: currentSummary.pendingTasks.slice(0, 5),
+        color: '#eab308',
+      });
+    }
+
+    return list;
   }, [currentSummary]);
 
-  // Derive topic tags from actual data
+  // Live topic tags from the engine
   const topicTags = useMemo(() => {
-    if (!currentSummary) return [];
-    const tags: string[] = [];
-    if (currentSummary.projectGoal) tags.push('Goal Defined');
-    if (currentSummary.codeGenerated) tags.push('Code Generated');
-    if (currentSummary.filesCreated.length > 0) tags.push(`${currentSummary.filesCreated.length} Files`);
-    if (currentSummary.bugs.length > 0) tags.push(`${currentSummary.bugs.length} Bugs`);
-    if (currentSummary.pendingTasks.length > 0) tags.push(`${currentSummary.pendingTasks.length} Pending`);
-    if (currentSummary.completedTasks.length > 0) tags.push(`${currentSummary.completedTasks.length} Done`);
-    if (currentSummary.links.length > 0) tags.push(`${currentSummary.links.length} Links`);
-    return tags.slice(0, 6); // Max 6 tags
+    if (!currentSummary || !currentSummary.topicTags) return [];
+    return currentSummary.topicTags;
   }, [currentSummary]);
 
-  const handleCopy = async () => {
-    if (!currentSummary) return;
-    const text = sections.map(s => `${s.label}\n${s.items.map(i => `  • ${i}`).join('\n')}`).join('\n\n');
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+  // Format "last updated" from real timestamp
+  const lastUpdatedText = useMemo(() => {
+    if (!currentSummary || !currentSummary.lastUpdatedAt) return '';
+    const diff = Date.now() - currentSummary.lastUpdatedAt;
+    const seconds = Math.floor(diff / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ago`;
+  }, [currentSummary]);
 
   const handleRegenerate = () => {
     setRegenerating(true);
-    // The summary engine runs in the background — send a message to trigger it
-    import('../../messaging/client').then(m => {
-      m.messaging.sendToBackground({ type: 'GET_STATE' }).then(() => {
+    messaging
+      .sendToBackground({ type: 'REGENERATE_SUMMARY' } as { type: 'REGENERATE_SUMMARY' })
+      .then(() => {
+        setRegenerating(false);
+      })
+      .catch(() => {
         setRegenerating(false);
       });
-    });
-    setTimeout(() => setRegenerating(false), 1500);
+    // Safety timeout
+    setTimeout(() => setRegenerating(false), 3000);
   };
 
-  // Compute coverage estimate based on what fields are populated
-  const coverage = useMemo(() => {
-    if (!currentSummary) return 0;
-    const fields = [
-      currentSummary.projectGoal,
-      currentSummary.facts.length > 0,
-      currentSummary.architectureDecisions.length > 0,
-      currentSummary.completedTasks.length > 0,
-      currentSummary.currentDiscussion
-    ];
-    return Math.round((fields.filter(Boolean).length / fields.length) * 100);
-  }, [currentSummary]);
-
-  // Empty state
+  // Empty state — no conversation being tracked yet
   if (!currentSummary || sections.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center flex-1 p-8 text-center text-[var(--text-muted)]" role="status">
+      <div
+        className="flex flex-col items-center justify-center flex-1 p-8 text-center text-[#a1a1aa] h-full"
+        role="status"
+      >
         <FileText size={48} className="opacity-20 mb-4" />
-        <h3 className="text-lg font-semibold text-[var(--text-secondary)] mb-2">No Summary Yet</h3>
-        <p className="text-sm max-w-xs">Start a conversation on a supported platform and the summary will appear here automatically.</p>
+        <h3 className="text-lg font-semibold text-[#e4e4e7] mb-2">No Summary Yet</h3>
+        <p className="text-sm max-w-xs">
+          Start a conversation on a supported platform and the summary will appear here
+          automatically.
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full bg-[var(--bg-primary)] p-5 gap-4 text-[var(--text-primary)]">
-      
+    <div className="flex flex-col h-full bg-[#0a0a0c] p-5 pb-6 overflow-y-auto">
       {/* Header */}
-      <div className="flex justify-between items-center">
-        <div className="flex items-center gap-3">
-          <h2 className="text-lg font-bold">Rolling Summary</h2>
-          <div className="flex items-center gap-1.5 text-xs text-[var(--status-healthy)]" role="status" aria-live="polite">
-            <div className="relative w-2 h-2">
-              <div className="absolute inset-0 rounded-full bg-[var(--status-healthy)] opacity-75 animate-ping"></div>
-              <div className="w-2 h-2 rounded-full bg-[var(--status-healthy)]"></div>
-            </div>
-            Live
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <button 
-            onClick={handleRegenerate} 
-            className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            aria-label="Regenerate summary"
-          >
-            <RefreshCw size={16} className={regenerating ? 'animate-spin' : ''} />
-          </button>
-          <button 
-            onClick={handleCopy} 
-            className="p-2 rounded-lg hover:bg-[var(--bg-tertiary)] transition-colors text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            aria-label="Copy summary to clipboard"
-          >
-            {copied ? <Check size={16} className="text-[var(--status-healthy)]" /> : <Copy size={16} />}
-          </button>
-        </div>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold text-white">Rolling Summary</h2>
+        <button
+          onClick={handleRegenerate}
+          className="p-2 rounded-lg bg-[#121216] border border-[#2a2a30] hover:bg-[#1a1a20] transition-colors text-[#a1a1aa] hover:text-white"
+          aria-label="Regenerate summary"
+        >
+          <RefreshCw size={16} className={regenerating ? 'animate-spin' : ''} />
+        </button>
       </div>
 
-      {/* Topic Tags */}
-      {topicTags.length > 0 && (
-        <div className="flex flex-wrap gap-2" role="list" aria-label="Summary topics">
-          {topicTags.map((tag, i) => (
-            <span key={i} className="px-2.5 py-1 bg-[var(--bg-tertiary)] text-[var(--text-secondary)] text-[11px] font-medium rounded-full border border-[var(--border-subtle)]" role="listitem">
-              {tag}
-            </span>
-          ))}
+      {/* Current Discussion Banner */}
+      {currentSummary.currentDiscussion && (
+        <div className="bg-[#121216] border border-[#22d3ee]/30 rounded-xl p-3 mb-4 shadow-[0_0_10px_rgba(34,211,238,0.05)]">
+          <div className="text-[11px] font-semibold text-[#22d3ee] uppercase tracking-wider mb-1">
+            Current Focus
+          </div>
+          <div className="text-[13px] text-[#e4e4e7] leading-snug">
+            {currentSummary.currentDiscussion}
+          </div>
         </div>
       )}
 
-      {/* Summary Sections */}
-      <div className="flex-1 overflow-y-auto flex flex-col gap-4 pr-1" role="region" aria-label="Summary content">
-        {sections.map((section, idx) => (
-          <div key={idx} className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-xl p-4 shadow-sm">
-            <h3 className="text-sm font-semibold mb-2 text-[var(--text-primary)]">{section.label}</h3>
-            <ul className="flex flex-col gap-1">
-              {section.items.map((item, j) => (
-                <li key={j} className="text-xs text-[var(--text-secondary)] leading-relaxed pl-2 border-l-2 border-[var(--border-subtle)]">
-                  {item}
-                </li>
+      {/* Main Card */}
+      <div className="bg-[#121216] border border-[#2a2a30] rounded-xl flex flex-col shadow-sm mb-4">
+        {/* Inner Header */}
+        <div className="flex justify-between items-center px-4 py-3 border-b border-[#2a2a30] bg-[#ffffff03]">
+          <span className="text-[13px] text-[#737373]">
+            Covers {currentSummary.turnsCovered || stats.turns} turns · Updated{' '}
+            {lastUpdatedText || 'just now'}
+          </span>
+          <div className="w-2 h-2 rounded-full bg-[#4ade80]"></div>
+        </div>
+
+        {/* Sections */}
+        <div className="p-4 flex flex-col gap-5">
+          {sections.map((section, sIdx) => {
+            const Icon = section.icon;
+            return (
+              <div key={sIdx} className="flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <Icon size={14} style={{ color: section.color }} />
+                  <span className="text-[13px] font-semibold" style={{ color: section.color }}>
+                    {section.title}
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1.5 pl-5">
+                  {section.items.map((item, iIdx) => (
+                    <div key={iIdx} className="flex gap-2 items-start">
+                      <div
+                        className="mt-1.5 w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{ backgroundColor: section.color, opacity: 0.6 }}
+                      ></div>
+                      <span className="text-[13px] text-[#a1a1aa] leading-snug">{item}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Tags & Footer Info */}
+        {topicTags.length > 0 && (
+          <div className="px-4 pb-4">
+            <div className="flex flex-wrap gap-2">
+              {topicTags.map((tag, i) => (
+                <span
+                  key={i}
+                  className="px-3 py-1 bg-transparent border border-[#3f3f46] text-[#a1a1aa] text-[11px] font-medium rounded-full"
+                >
+                  {tag}
+                </span>
               ))}
-            </ul>
+            </div>
           </div>
-        ))}
+        )}
       </div>
 
-      {/* Footer */}
-      <div className="flex justify-between items-center pt-3 border-t border-[var(--border-subtle)]">
-        <span className="text-xs text-[var(--text-muted)]">
-          Coverage: {coverage}% • {stats.turns} turns tracked
-        </span>
-        <span className="text-xs text-[var(--text-muted)]">
-          Updates every {useAppState.getState().summaryFrequency} turns
-        </span>
+      {/* Action Buttons */}
+      <div className="flex gap-3 mt-auto">
+        <button
+          onClick={handleRegenerate}
+          className="flex-1 flex justify-center items-center gap-2 py-2.5 rounded-lg border border-[#2a2a30] text-[13px] font-medium text-[#f4f4f5] hover:bg-[#2a2a30] transition-colors"
+        >
+          <RefreshCw size={14} className={regenerating ? 'animate-spin' : ''} /> Regenerate
+        </button>
+        <button
+          onClick={() => setShowModal(true)}
+          className="flex-1 flex justify-center items-center gap-2 py-2.5 rounded-lg text-[13px] font-semibold bg-gradient-to-r from-[#4ade80] to-[#22d3ee] text-black shadow-[0_0_15px_rgba(34,211,238,0.2)] hover:opacity-90 transition-opacity"
+        >
+          <Copy size={14} /> Copy Summary
+        </button>
       </div>
+
+      {/* Modal */}
+      {showModal && <TransferSummaryModal onClose={() => setShowModal(false)} />}
     </div>
   );
 }

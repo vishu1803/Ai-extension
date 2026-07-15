@@ -6,12 +6,18 @@ import { Settings, Bell, Shield, Paintbrush, MonitorSmartphone, HelpCircle } fro
 export function App() {
   const [activeMenu, setActiveMenu] = useState('general');
   const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
-  const { theme, setTheme } = useAppState();
+  const { theme, setTheme, thresholds } = useAppState();
+
+  // Local state for options to match UI before saving
+  const [localWidgetState, setLocalWidgetState] = useState(false);
+  const [localConfidence, setLocalConfidence] = useState(true);
+  const [localSound, setLocalSound] = useState(false);
+  const [localWidgetPos, setLocalWidgetPos] = useState('Bottom Right');
 
   // Check onboarding status on mount
   useEffect(() => {
-    import('../../storage').then(m => {
-      m.storageLayer.appState.getValue().then((state: any) => {
+    import('../../storage').then((m) => {
+      m.storageLayer.appState.getValue().then((state) => {
         setOnboardingComplete(state.onboardingComplete === true);
       });
     });
@@ -19,13 +25,17 @@ export function App() {
 
   const handleOnboardingFinish = async () => {
     const { storageLayer } = await import('../../storage');
-    await storageLayer.updateAppState({ onboardingComplete: true } as any);
+    await storageLayer.updateAppState({ onboardingComplete: true });
     setOnboardingComplete(true);
   };
 
   // Loading state
   if (onboardingComplete === null) {
-    return <div className="flex items-center justify-center h-screen bg-[var(--bg-primary)] text-[var(--text-muted)]">Loading...</div>;
+    return (
+      <div className="flex items-center justify-center h-screen bg-[#0f0f14] text-[#a1a1aa]">
+        Loading...
+      </div>
+    );
   }
 
   // Show Onboarding if not completed
@@ -36,30 +46,28 @@ export function App() {
   const menu = [
     { id: 'general', label: 'General', icon: <Settings size={18} /> },
     { id: 'appearance', label: 'Appearance', icon: <Paintbrush size={18} /> },
-    { id: 'alerts', label: 'Alerts & Thresholds', icon: <Bell size={18} /> },
+    { id: 'alerts', label: 'Alerts', icon: <Bell size={18} /> },
     { id: 'platforms', label: 'Platforms', icon: <MonitorSmartphone size={18} /> },
     { id: 'privacy', label: 'Privacy', icon: <Shield size={18} /> },
-    { id: 'about', label: 'About', icon: <HelpCircle size={18} /> }
+    { id: 'about', label: 'About', icon: <HelpCircle size={18} /> },
   ];
 
   return (
-    <div className="flex max-w-5xl mx-auto h-screen bg-[var(--bg-primary)]">
-      
+    <div className="flex max-w-[1200px] mx-auto h-screen bg-[#0f0f14] text-white">
       {/* Sidebar Navigation */}
-      <aside className="w-64 border-r border-[var(--border-subtle)] bg-[var(--bg-secondary)] py-8 px-4 hidden md:block">
-        <h1 className="text-xl font-bold mb-8 px-4 bg-clip-text text-transparent bg-[var(--accent-gradient)]">
-          AI Context Tracker
-        </h1>
-        <nav className="flex flex-col gap-1.5" role="navigation" aria-label="Settings sections">
-          {menu.map(item => (
+      <aside className="w-[280px] bg-[#121216] border-r border-[#2a2a30] py-8 px-5 hidden md:block">
+        <h2 className="text-[11px] font-bold text-[#a1a1aa] mb-4 uppercase tracking-widest px-2">
+          Left Sidebar
+        </h2>
+        <nav className="flex flex-col gap-1" role="navigation" aria-label="Settings sections">
+          {menu.map((item) => (
             <button
               key={item.id}
               onClick={() => setActiveMenu(item.id)}
-              aria-current={activeMenu === item.id ? 'page' : undefined}
-              className={`flex items-center gap-3 w-full px-4 py-2.5 rounded-lg font-medium transition-all duration-200 ${
-                activeMenu === item.id 
-                  ? 'bg-[var(--accent-cyan)]/10 text-[var(--accent-cyan)] shadow-sm' 
-                  : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+              className={`flex items-center gap-3 w-full px-4 py-3 rounded-lg font-medium transition-colors ${
+                activeMenu === item.id
+                  ? 'bg-[#1b2b34] text-[#22d3ee]'
+                  : 'text-[#a1a1aa] hover:text-white hover:bg-[#1a1a20]'
               }`}
             >
               {item.icon}
@@ -70,272 +78,236 @@ export function App() {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto p-8 md:p-12">
-        <div className="max-w-2xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-300">
-          
-          <h2 className="text-3xl font-bold mb-8">
-            {menu.find(m => m.id === activeMenu)?.label}
+      <main className="flex-1 overflow-y-auto p-10 bg-[#0f0f14]">
+        <div className="max-w-3xl">
+          <h2 className="text-[11px] font-bold text-[#a1a1aa] mb-4 uppercase tracking-widest">
+            Right Content Area
           </h2>
 
+          <h1 className="text-[28px] font-bold mb-8 text-white">
+            {menu.find((m) => m.id === activeMenu)?.label}
+          </h1>
+
           {activeMenu === 'general' && (
-            <div className="flex flex-col gap-8">
-              <section className="p-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)]">
-                <h3 className="text-lg font-semibold mb-1">Widget Position</h3>
-                <p className="text-[var(--text-secondary)] text-sm mb-6">Reset the widget position if it gets lost off-screen.</p>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Reset Position</span>
-                  <button 
-                    onClick={() => useAppState.getState().setWidgetPosition({ x: 20, y: 20 })}
-                    className="px-4 py-2 bg-[var(--bg-tertiary)] hover:bg-[var(--bg-primary)] border border-[var(--border-subtle)] rounded-lg text-sm font-medium transition-colors"
-                  >
-                    Reset to Default
-                  </button>
-                </div>
-              </section>
-              
-              <section className="p-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)] flex flex-col gap-4">
-                <h3 className="text-lg font-semibold mb-1">Backup & Restore</h3>
-                <p className="text-[var(--text-secondary)] text-sm mb-2">Export your settings, snapshots, and metrics to a JSON file.</p>
-                <div className="flex gap-3">
-                  <button onClick={async () => {
-                    const dataStr = JSON.stringify(await import('../../storage').then(m => m.storageLayer.appState.getValue()), null, 2);
-                    const blob = new Blob([dataStr], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `ai-context-tracker-backup.json`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  }} className="flex-1 flex justify-center items-center gap-2 py-2.5 bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] rounded-lg text-sm font-medium hover:bg-[var(--bg-primary)] transition-colors">
-                    Download Backup
-                  </button>
-                  <button onClick={() => document.getElementById('restore-file')?.click()} className="flex-1 flex justify-center items-center gap-2 py-2.5 bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] rounded-lg text-sm font-medium hover:bg-[var(--bg-primary)] transition-colors">
-                    Restore Data
-                  </button>
-                  <input id="restore-file" type="file" accept=".json" className="hidden" onChange={(e) => {
-                    const file = (e.target as HTMLInputElement).files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = async (ev) => {
-                      try {
-                        const parsed = JSON.parse(ev.target?.result as string);
-                        if (parsed) {
-                          const { storageLayer } = await import('../../storage');
-                          const currentState = await storageLayer.appState.getValue();
-                          await storageLayer.appState.setValue({ ...currentState, ...parsed });
-                          alert('Restored successfully');
-                        }
-                      } catch(e) { alert('Invalid backup'); }
-                    };
-                    reader.readAsText(file);
-                  }} />
-                </div>
-              </section>
-            </div>
-          )}
-
-          {activeMenu === 'appearance' && (
-            <div className="flex flex-col gap-8">
-              <section className="p-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)]">
-                <h3 className="text-lg font-semibold mb-4">Theme Preference</h3>
-                <div className="flex gap-4">
-                  {(['dark', 'light', 'system'] as const).map(t => (
+            <div className="flex flex-col gap-5">
+              <div className="flex gap-5">
+                {/* Theme Block */}
+                <div className="flex-1 bg-[#121216] border border-[#2a2a30] rounded-2xl p-5 flex flex-col justify-center">
+                  <h3 className="text-[16px] font-semibold text-white mb-4">Theme</h3>
+                  <div className="flex bg-[#0a0a0c] border border-[#2a2a30] rounded-full p-1 w-full">
                     <button
-                      key={t}
-                      onClick={() => setTheme(t)}
-                      className={`flex-1 py-3 px-4 rounded-lg border-2 transition-all capitalize font-medium ${
-                        theme === t 
-                          ? 'border-[var(--accent-cyan)] bg-[var(--accent-cyan)]/10 text-[var(--accent-cyan)]' 
-                          : 'border-[var(--border-subtle)] hover:border-[var(--text-muted)] text-[var(--text-secondary)]'
-                      }`}
+                      className={`flex-1 py-1.5 rounded-full text-[14px] font-medium transition-colors ${theme === 'light' ? 'bg-[#22d3ee] text-black' : 'text-[#a1a1aa] hover:text-white'}`}
+                      onClick={() => setTheme('light')}
                     >
-                      {t}
+                      Light
                     </button>
-                  ))}
-                </div>
-              </section>
-            </div>
-          )}
-
-          {activeMenu === 'alerts' && (
-            <div className="flex flex-col gap-8">
-              <section className="p-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)]">
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h3 className="text-lg font-semibold mb-1">Smart Notifications</h3>
-                    <p className="text-[var(--text-secondary)] text-sm">Show toast cards when approaching limits</p>
+                    <button
+                      className={`flex-1 py-1.5 rounded-full text-[14px] font-medium transition-colors ${theme === 'dark' ? 'bg-[#22d3ee] text-black shadow-[0_0_15px_rgba(34,211,238,0.3)]' : 'text-[#a1a1aa] hover:text-white'}`}
+                      onClick={() => setTheme('dark')}
+                    >
+                      Dark
+                    </button>
+                    <button
+                      className={`flex-1 py-1.5 rounded-full text-[14px] font-medium transition-colors ${theme === 'system' ? 'bg-[#22d3ee] text-black' : 'text-[#a1a1aa] hover:text-white'}`}
+                      onClick={() => setTheme('system')}
+                    >
+                      Auto
+                    </button>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" checked={useAppState.getState().notificationsEnabled} onChange={e => {
-                      const enabled = (e.target as HTMLInputElement).checked;
-                      import('../../storage').then(m => m.storageLayer.updateAppState({ notificationsEnabled: enabled }));
-                    }} className="sr-only peer" />
-                    <div className="w-11 h-6 bg-[var(--bg-tertiary)] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[var(--accent-cyan)]"></div>
-                  </label>
                 </div>
 
-                <div className="border-t border-[var(--border-subtle)] pt-6">
-                  <h3 className="text-lg font-semibold mb-1">Health Thresholds</h3>
-                  <p className="text-[var(--text-secondary)] text-sm mb-6">Adjust when the extension warns you about context limits.</p>
-                  
-                  {useAppState.getState().thresholds && (
-                    <div className="flex flex-col gap-8">
-                      <div>
-                        <div className="flex justify-between text-sm font-medium mb-2">
-                          <span className="text-[var(--status-caution)]">Caution</span>
-                          <span>{useAppState.getState().thresholds.caution}%</span>
-                        </div>
-                        <input type="range" min="50" max="80" value={useAppState.getState().thresholds.caution} onInput={(e) => useAppState.getState().setThresholds({ ...useAppState.getState().thresholds, caution: parseInt((e.target as HTMLInputElement).value) })} className="w-full h-2 rounded-lg appearance-none bg-[var(--status-caution)]/20 cursor-pointer accent-[var(--status-caution)]" />
-                      </div>
-                      <div>
-                        <div className="flex justify-between text-sm font-medium mb-2">
-                          <span className="text-[var(--status-warning)]">Warning</span>
-                          <span>{useAppState.getState().thresholds.warning}%</span>
-                        </div>
-                        <input type="range" min="70" max="90" value={useAppState.getState().thresholds.warning} onInput={(e) => useAppState.getState().setThresholds({ ...useAppState.getState().thresholds, warning: parseInt((e.target as HTMLInputElement).value) })} className="w-full h-2 rounded-lg appearance-none bg-[var(--status-warning)]/20 cursor-pointer accent-[var(--status-warning)]" />
-                      </div>
-                      <div>
-                        <div className="flex justify-between text-sm font-medium mb-2">
-                          <span className="text-[var(--status-critical)]">Critical</span>
-                          <span>{useAppState.getState().thresholds.critical}%</span>
-                        </div>
-                        <input type="range" min="85" max="99" value={useAppState.getState().thresholds.critical} onInput={(e) => useAppState.getState().setThresholds({ ...useAppState.getState().thresholds, critical: parseInt((e.target as HTMLInputElement).value) })} className="w-full h-2 rounded-lg appearance-none bg-[var(--status-critical)]/20 cursor-pointer accent-[var(--status-critical)]" />
+                {/* Widget Position Block */}
+                <div className="flex-1 bg-[#121216] border border-[#2a2a30] rounded-2xl p-5">
+                  <h3 className="text-[16px] font-semibold text-white mb-4">Widget Position</h3>
+                  <div className="bg-[#0a0a0c] border border-[#2a2a30] rounded-xl px-4 py-2.5 flex justify-between items-center mb-4 cursor-pointer">
+                    <span className="text-[14px] text-white">{localWidgetPos}</span>
+                    <ChevronDownIcon size={16} className="text-[#a1a1aa]" />
+                  </div>
+
+                  {/* 2x2 Grid Representation */}
+                  <div className="w-full h-[60px] border border-[#2a2a30] rounded-lg grid grid-cols-2 grid-rows-2 gap-1 p-1">
+                    <div className="bg-[#2a2a30] rounded w-5 h-5 opacity-30"></div>
+                    <div className="bg-[#2a2a30] rounded w-5 h-5 justify-self-end opacity-30"></div>
+                    <div className="bg-[#2a2a30] rounded w-5 h-5 self-end opacity-30"></div>
+                    <div className="bg-[#22d3ee] rounded w-5 h-5 self-end justify-self-end shadow-[0_0_15px_rgba(34,211,238,0.5)]"></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Default Widget State & Confidence Badge Row */}
+              <div className="flex gap-5">
+                <div className="flex-1 bg-[#121216] border border-[#2a2a30] rounded-2xl p-5">
+                  <h3 className="text-[16px] font-semibold text-white mb-4">
+                    Default Widget State
+                  </h3>
+                  <div className="flex items-center gap-4">
+                    <button
+                      onClick={() => setLocalWidgetState(!localWidgetState)}
+                      className={`w-[42px] h-[24px] rounded-full relative transition-colors ${localWidgetState ? 'bg-[#22d3ee]' : 'bg-[#3f3f46]'}`}
+                    >
+                      <div
+                        className={`absolute top-[2px] w-[20px] h-[20px] bg-white rounded-full transition-transform ${localWidgetState ? 'left-[20px]' : 'left-[2px]'}`}
+                      ></div>
+                    </button>
+                    <span className="text-[14px] text-[#a1a1aa]">Start expanded</span>
+                  </div>
+                </div>
+
+                <div className="flex-1 bg-[#121216] border border-[#2a2a30] rounded-2xl p-5 flex items-center justify-between">
+                  <div>
+                    <h3 className="text-[16px] font-semibold text-white mb-2">Confidence Badge</h3>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() => setLocalConfidence(!localConfidence)}
+                        className={`w-[42px] h-[24px] rounded-full relative transition-colors ${localConfidence ? 'bg-[#22d3ee]' : 'bg-[#3f3f46]'}`}
+                      >
+                        <div
+                          className={`absolute top-[2px] w-[20px] h-[20px] bg-white rounded-full transition-transform ${localConfidence ? 'left-[20px]' : 'left-[2px]'}`}
+                        ></div>
+                      </button>
+                      <span className="text-[14px] text-[#a1a1aa]">Show estimation accuracy</span>
+                    </div>
+                  </div>
+                  {/* Glowing Cyan Square */}
+                  <div className="w-[48px] h-[48px] rounded-xl bg-gradient-to-br from-[#22d3ee] to-[#38bdf8] shadow-[0_0_20px_rgba(34,211,238,0.4)] opacity-90 border border-white/20"></div>
+                </div>
+              </div>
+
+              {/* Alert Thresholds Block */}
+              <div className="bg-[#121216] border border-[#2a2a30] rounded-2xl p-6">
+                <h3 className="text-[16px] font-semibold text-white mb-6">Alert Thresholds</h3>
+
+                <div className="flex flex-col gap-6">
+                  {/* Caution */}
+                  <div className="relative">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[14px] text-white">
+                        Caution Level: {thresholds.caution}%
+                      </span>
+                    </div>
+                    <div className="relative h-1.5 w-full bg-[#2a2a30] rounded-full">
+                      <div
+                        className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-[#4ade80] to-[#eab308]"
+                        style={{ width: `${thresholds.caution}%` }}
+                      ></div>
+                      <div
+                        className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-[#3f3f46] border-[3px] border-[#a1a1aa] rounded-full cursor-pointer"
+                        style={{ left: `calc(${thresholds.caution}% - 8px)` }}
+                      ></div>
+                      <div
+                        className="absolute top-[-30px] px-2 py-1 bg-[#2a2a30] text-[12px] rounded text-[#a1a1aa]"
+                        style={{ left: `calc(${thresholds.caution}% - 18px)` }}
+                      >
+                        {thresholds.caution}%
                       </div>
                     </div>
-                  )}
-                </div>
-              </section>
-            </div>
-          )}
+                  </div>
 
-          {activeMenu === 'platforms' && (
-            <div className="flex flex-col gap-8">
-              <section className="p-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)]">
-                <h3 className="text-lg font-semibold mb-6">Supported Platforms</h3>
-                <div className="flex flex-col gap-4">
-                  {(['chatgpt', 'claude', 'gemini'] as const).map(p => (
-                    <label key={p} className="flex items-center justify-between cursor-pointer group">
-                      <span className="text-sm font-medium capitalize">{p === 'chatgpt' ? 'ChatGPT' : p}</span>
-                      <div className="relative inline-flex items-center">
-                        <input type="checkbox" checked={useAppState.getState().supportedPlatforms[p]} onChange={e => {
-                          const checked = (e.target as HTMLInputElement).checked;
-                          import('../../storage').then(m => m.storageLayer.updateAppState({
-                            supportedPlatforms: { ...useAppState.getState().supportedPlatforms, [p]: checked }
-                          }));
-                        }} className="sr-only peer" />
-                        <div className="w-11 h-6 bg-[var(--bg-tertiary)] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[var(--accent-cyan)]"></div>
+                  {/* Warning */}
+                  <div className="relative mt-2">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[14px] text-white">
+                        Warning Level: {thresholds.warning}%
+                      </span>
+                    </div>
+                    <div className="relative h-1.5 w-full bg-[#2a2a30] rounded-full">
+                      <div
+                        className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-[#eab308] to-[#f97316]"
+                        style={{ width: `${thresholds.warning}%` }}
+                      ></div>
+                      <div
+                        className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-[#3f3f46] border-[3px] border-[#a1a1aa] rounded-full cursor-pointer"
+                        style={{ left: `calc(${thresholds.warning}% - 8px)` }}
+                      ></div>
+                      <div
+                        className="absolute top-[-30px] px-2 py-1 bg-[#2a2a30] text-[12px] rounded text-[#a1a1aa]"
+                        style={{ left: `calc(${thresholds.warning}% - 18px)` }}
+                      >
+                        {thresholds.warning}%
                       </div>
-                    </label>
-                  ))}
-                </div>
-              </section>
-              
-              <section className="p-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)]">
-                <h3 className="text-lg font-semibold mb-6">Data Engine</h3>
-                <div className="flex items-center justify-between mb-4">
-                  <span className="text-sm font-medium">Summary Update Frequency</span>
-                  <select 
-                    value={useAppState.getState().summaryFrequency} 
-                    onChange={e => import('../../storage').then(m => m.storageLayer.updateAppState({ summaryFrequency: parseInt((e.target as HTMLSelectElement).value) }))}
-                    className="bg-[var(--bg-primary)] border border-[var(--border-subtle)] rounded-lg px-3 py-1.5 text-sm outline-none focus:border-[var(--accent-cyan)]"
-                  >
-                    <option value="1">Every Turn (High CPU)</option>
-                    <option value="3">Every 3 Turns (Balanced)</option>
-                    <option value="5">Every 5 Turns (Optimal)</option>
-                    <option value="10">Every 10 Turns (Eco)</option>
-                  </select>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">Default Export Format</span>
-                  <select 
-                    value={useAppState.getState().exportFormat} 
-                    onChange={e => import('../../storage').then(m => m.storageLayer.updateAppState({ exportFormat: (e.target as HTMLSelectElement).value as any }))}
-                    className="bg-[var(--bg-primary)] border border-[var(--border-subtle)] rounded-lg px-3 py-1.5 text-sm outline-none focus:border-[var(--accent-cyan)]"
-                  >
-                    <option value="markdown">Markdown (.md)</option>
-                    <option value="json">JSON (.json)</option>
-                    <option value="text">Plain Text (.txt)</option>
-                  </select>
-                </div>
-              </section>
-            </div>
-          )}
-
-          {activeMenu === 'privacy' && (
-            <div className="flex flex-col gap-8">
-              <section className="p-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)]">
-                <h3 className="text-lg font-semibold mb-1">Privacy Controls</h3>
-                <p className="text-[var(--text-secondary)] text-sm mb-6">AI Context Tracker is 100% local. Your data never leaves your browser.</p>
-                
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <span className="text-sm font-medium">Retain Conversation History</span>
-                    <p className="text-xs text-[var(--text-muted)] mt-0.5">Save past conversations locally</p>
+                    </div>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" checked={useAppState.getState().privacy.enableHistory} onChange={e => {
-                      const checked = (e.target as HTMLInputElement).checked;
-                      import('../../storage').then(m => m.storageLayer.updateAppState({
-                        privacy: { ...useAppState.getState().privacy, enableHistory: checked }
-                      }));
-                    }} className="sr-only peer" />
-                    <div className="w-11 h-6 bg-[var(--bg-tertiary)] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[var(--accent-cyan)]"></div>
-                  </label>
-                </div>
 
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <span className="text-sm font-medium text-[var(--status-critical)]">Anonymous Analytics</span>
-                    <p className="text-xs text-[var(--text-muted)] mt-0.5">Help improve Context Tracker</p>
+                  {/* Critical */}
+                  <div className="relative mt-2">
+                    <div className="flex justify-between items-center mb-2">
+                      <span className="text-[14px] text-white">
+                        Critical Level: {thresholds.critical}%
+                      </span>
+                    </div>
+                    <div className="relative h-1.5 w-full bg-[#2a2a30] rounded-full">
+                      <div
+                        className="absolute left-0 top-0 h-full rounded-full bg-gradient-to-r from-[#f97316] to-[#ef4444]"
+                        style={{ width: `${thresholds.critical}%` }}
+                      ></div>
+                      <div
+                        className="absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-[#3f3f46] border-[3px] border-[#a1a1aa] rounded-full cursor-pointer"
+                        style={{ left: `calc(${thresholds.critical}% - 8px)` }}
+                      ></div>
+                      <div
+                        className="absolute top-[-30px] px-2 py-1 bg-[#2a2a30] text-[12px] rounded text-[#a1a1aa]"
+                        style={{ left: `calc(${thresholds.critical}% - 18px)` }}
+                      >
+                        {thresholds.critical}%
+                      </div>
+                    </div>
                   </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input type="checkbox" checked={useAppState.getState().privacy.allowAnalytics} onChange={e => {
-                      const checked = (e.target as HTMLInputElement).checked;
-                      import('../../storage').then(m => m.storageLayer.updateAppState({
-                        privacy: { ...useAppState.getState().privacy, allowAnalytics: checked }
-                      }));
-                    }} className="sr-only peer" />
-                    <div className="w-11 h-6 bg-[var(--bg-tertiary)] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[var(--status-critical)]"></div>
-                  </label>
                 </div>
+              </div>
 
-                <div className="border-t border-[var(--border-subtle)] pt-4">
-                  <button onClick={async () => {
-                    if (confirm('Are you sure? This will permanently delete ALL data including snapshots, history, and settings.')) {
-                      const { storageLayer, defaultState } = await import('../../storage');
-                      await storageLayer.appState.setValue({ ...defaultState, onboardingComplete: true } as any);
-                      alert('All data cleared.');
-                    }
-                  }} className="text-sm text-[var(--status-critical)] font-medium hover:underline">
-                    Clear All Data
-                  </button>
+              {/* Sound Alerts Block */}
+              <div className="bg-[#121216] border border-[#2a2a30] rounded-2xl p-6 flex justify-between items-center">
+                <div>
+                  <h3 className="text-[16px] font-semibold text-white mb-1">Sound Alerts</h3>
+                  <p className="text-[14px] text-[#a1a1aa]">Play sound on critical alerts</p>
                 </div>
-              </section>
+                <button
+                  onClick={() => setLocalSound(!localSound)}
+                  className={`w-[42px] h-[24px] rounded-full relative transition-colors ${localSound ? 'bg-[#22d3ee]' : 'bg-[#3f3f46]'}`}
+                >
+                  <div
+                    className={`absolute top-[2px] w-[20px] h-[20px] bg-white rounded-full transition-transform ${localSound ? 'left-[20px]' : 'left-[2px]'}`}
+                  ></div>
+                </button>
+              </div>
+
+              {/* Footer Actions */}
+              <div className="flex justify-end items-center gap-6 mt-4">
+                <button className="text-[14px] text-[#a1a1aa] hover:text-white transition-colors">
+                  Reset to Defaults
+                </button>
+                <button className="px-6 py-2.5 bg-[#40848a] hover:bg-[#347378] text-white font-medium rounded-xl transition-colors">
+                  Save
+                </button>
+              </div>
             </div>
           )}
 
-          {activeMenu === 'about' && (
-            <div className="flex flex-col gap-8">
-              <section className="p-6 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-secondary)] shadow-[var(--shadow-card)] text-center">
-                <div className="w-20 h-20 mx-auto bg-[var(--accent-gradient)] rounded-2xl flex items-center justify-center mb-6 shadow-[var(--shadow-card)]">
-                  <h1 className="text-3xl text-white font-bold tracking-tighter">AI</h1>
-                </div>
-                <h3 className="text-2xl font-bold mb-1">AI Context Tracker</h3>
-                <p className="text-[var(--text-secondary)] mb-6">Version 1.0.0</p>
-                <p className="text-sm max-w-md mx-auto leading-relaxed mb-8">
-                  A privacy-first browser extension that gives AI power users real-time visibility into context limits and helps preserve conversation quality.
-                </p>
-                <div className="flex justify-center gap-4">
-                  <a href="#" className="text-sm font-medium text-[var(--accent-cyan)] hover:underline">View Changelog</a>
-                  <a href="#" className="text-sm font-medium text-[var(--accent-cyan)] hover:underline">Report Issue</a>
-                  <a href="#" className="text-sm font-medium text-[var(--accent-cyan)] hover:underline">Privacy Policy</a>
-                </div>
-              </section>
-            </div>
+          {/* Dummy placeholders for other menus */}
+          {activeMenu !== 'general' && (
+            <div className="text-[#a1a1aa]">This section is active. (Placeholder)</div>
           )}
-
         </div>
       </main>
     </div>
+  );
+}
+
+function ChevronDownIcon(props: { size?: number; className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={props.size}
+      height={props.size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={props.className}
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
   );
 }

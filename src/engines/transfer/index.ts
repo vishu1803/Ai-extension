@@ -2,33 +2,41 @@ import { StructuredSummary } from '../summary/types';
 import { TransferOptions, TransferResult } from './types';
 
 export class TransferEngine {
-  public static generateExport(summary: StructuredSummary | null, options: TransferOptions): TransferResult {
+  public static generateExport(
+    summary: StructuredSummary | null,
+    options: TransferOptions
+  ): TransferResult {
     if (!summary) {
-      return { content: 'No conversation context available.', mimeType: 'text/plain', extension: '.txt' };
+      return {
+        content: 'No conversation context available.',
+        mimeType: 'text/plain',
+        extension: '.txt',
+      };
     }
 
     if (options.format === 'json') {
       return {
         content: JSON.stringify(this.buildContextObject(summary, options), null, 2),
         mimeType: 'application/json',
-        extension: '.json'
+        extension: '.json',
       };
     }
 
-    const content = options.format === 'markdown' 
-      ? this.generateMarkdown(summary, options)
-      : this.generatePlainText(summary, options);
+    const content =
+      options.format === 'markdown'
+        ? this.generateMarkdown(summary, options)
+        : this.generatePlainText(summary, options);
 
     return {
       content,
       mimeType: options.format === 'markdown' ? 'text/markdown' : 'text/plain',
-      extension: options.format === 'markdown' ? '.md' : '.txt'
+      extension: options.format === 'markdown' ? '.md' : '.txt',
     };
   }
 
   private static buildContextObject(summary: StructuredSummary, options: TransferOptions) {
-    const data: any = {
-      context: 'Transferred from AI Context Tracker'
+    const data: Record<string, unknown> = {
+      context: 'Transferred from AI Context Tracker',
     };
 
     if (options.includeMemory) {
@@ -71,22 +79,22 @@ export class TransferEngine {
 
     if (options.includeMemory) {
       if (summary.projectGoal) md += `**Goal:** ${summary.projectGoal}\n\n`;
-      
+
       if (summary.facts.length > 0) {
         md += `## Established Facts\n`;
-        summary.facts.forEach(f => md += `- ${f}\n`);
+        summary.facts.forEach((f) => (md += `- ${f}\n`));
         md += '\n';
       }
 
       if (summary.architectureDecisions.length > 0) {
         md += `## Architecture Decisions\n`;
-        summary.architectureDecisions.forEach(a => md += `- ${a}\n`);
+        summary.architectureDecisions.forEach((a) => (md += `- ${a}\n`));
         md += '\n';
       }
 
       if (summary.userPreferences.length > 0) {
         md += `## User Preferences\n`;
-        summary.userPreferences.forEach(p => md += `- ${p}\n`);
+        summary.userPreferences.forEach((p) => (md += `- ${p}\n`));
         md += '\n';
       }
     }
@@ -94,14 +102,14 @@ export class TransferEngine {
     if (options.includeCompleted) {
       md += `## Completed Work\n`;
       if (summary.completedTasks.length > 0) {
-        summary.completedTasks.forEach(t => md += `- [x] ${t}\n`);
+        summary.completedTasks.forEach((t) => (md += `- [x] ${t}\n`));
       } else {
         md += `*(None formally recorded)*\n`;
       }
-      
+
       if (summary.filesCreated.length > 0) {
         md += `\n**Files Created:**\n`;
-        summary.filesCreated.forEach(f => md += `- \`${f}\`\n`);
+        summary.filesCreated.forEach((f) => (md += `- \`${f}\`\n`));
       }
       md += '\n';
     }
@@ -109,10 +117,10 @@ export class TransferEngine {
     if (options.includePending) {
       md += `## Pending Work & Known Issues\n`;
       if (summary.pendingTasks.length > 0) {
-        summary.pendingTasks.forEach(t => md += `- [ ] ${t}\n`);
+        summary.pendingTasks.forEach((t) => (md += `- [ ] ${t}\n`));
       }
       if (summary.bugs.length > 0) {
-        summary.bugs.forEach(b => md += `- 🐛 **BUG:** ${b}\n`);
+        summary.bugs.forEach((b) => (md += `- 🐛 **BUG:** ${b}\n`));
       }
       md += '\n';
     }

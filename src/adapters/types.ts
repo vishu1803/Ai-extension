@@ -1,10 +1,11 @@
 import { ChatMessage } from './engineTypes';
+import { PlatformId } from '../shared/types';
 
 export interface PlatformAdapter {
   /**
    * Unique identifier for the platform (e.g., 'chatgpt', 'claude')
    */
-  id: string;
+  id: PlatformId;
 
   /**
    * Human-readable name (e.g., 'ChatGPT', 'Claude')
@@ -21,4 +22,9 @@ export interface PlatformAdapter {
    * The RobustDOMEngine will call this during mutations and handle state/lazy-loading.
    */
   extractMessages(): ChatMessage[];
+
+  /**
+   * Optional CSS selector to scope the MutationObserver to, reducing CPU usage.
+   */
+  observeSelector?: string;
 }

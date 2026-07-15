@@ -2,9 +2,9 @@
  * A utility to debounce DOM mutations.
  * Returns a function that triggers the callback after `delay` ms of no invocations.
  */
-export function debounce(func: Function, delay: number) {
-  let timeoutId: any;
-  return (...args: any[]) => {
+export function debounce<T extends (...args: unknown[]) => void>(func: T, delay: number) {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  return (...args: Parameters<T>) => {
     clearTimeout(timeoutId);
     timeoutId = setTimeout(() => {
       func(...args);

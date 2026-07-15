@@ -1,19 +1,42 @@
 import { StructuredSummary } from '../engines/summary/types';
 
-export type PlatformId = 'chatgpt' | 'claude' | 'gemini';
+export type PlatformId = 'chatgpt' | 'claude' | 'gemini' | 'grok' | 'perplexity';
 
 export type HealthStatus = 'healthy' | 'caution' | 'warning' | 'critical';
 
 export interface TokenEstimate {
   count: number;
+  inputCount: number;
+  outputCount: number;
   confidence: number; // 0-1
   isStreaming: boolean;
+}
+
+export interface ContextHealthMetrics {
+  repetition: 'Low' | 'Medium' | 'High';
+  lengthDrift: 'Stable' | 'Growing' | 'Shrinking';
+  instruction: 'Good' | 'Fair' | 'Poor';
+  explicit: 'None' | 'Some' | 'High';
+}
+
+export interface HealthSignal {
+  value: number;
+  weight: number;
+  label: string;
+  description: string;
+}
+
+export interface HealthScore {
+  overall: number;
+  status: HealthStatus;
+  signals: Record<string, HealthSignal>;
 }
 
 export interface ConversationStats {
   turns: number;
   avgTokensPerTurn: number;
   contextLimit: number;
+  healthMetrics: ContextHealthMetrics;
 }
 
 export interface Snapshot {
@@ -42,13 +65,17 @@ export interface AppState {
   widgetPosition: { x: number; y: number };
   widgetCollapsed: boolean;
   notificationsEnabled: boolean;
+  trackingEnabled: boolean;
+  onboardingComplete: boolean;
   snapshots: Snapshot[];
-  
+
   // Settings
   supportedPlatforms: {
     chatgpt: boolean;
     claude: boolean;
     gemini: boolean;
+    grok: boolean;
+    perplexity: boolean;
   };
   summaryFrequency: number;
   exportFormat: 'markdown' | 'text' | 'json';

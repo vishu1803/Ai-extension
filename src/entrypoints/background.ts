@@ -3,21 +3,54 @@ import { browser } from 'wxt/browser';
 import { messaging } from '../messaging/client';
 import { storageLayer, defaultState } from '../storage';
 import { ExtensionMessage } from '../messaging/types';
-import { TokenEngine } from '../engines/token';
+// TokenEngine is now offloaded to offscreen document
 import { SummaryEngine } from '../engines/summary';
-import { HealthStatus } from '../shared/types';
+import { PlatformId } from '../shared/types';
+import { ChatMessage } from '../adapters/engineTypes';
+import { DegradationEngine } from '../engines/degradation';
 
-// Global cache for token engines to avoid re-instantiating o200k_base encoder repeatedly
-const tokenEngines: Record<string, TokenEngine> = {};
+let creatingOffscreen: Promise<void> | null = null;
 
+async function setupOffscreenDocument(path: string) {
+  if (await hasDocument()) return;
+  if (creatingOffscreen) {
+    await creatingOffscreen;
+  } else {
+    creatingOffscreen = browser.offscreen.createDocument({
+      url: browser.runtime.getURL(path),
+      reasons: ['WORKERS'],
+      justification: 'Run tiktoken in an offscreen document for performance',
+    });
+    await creatingOffscreen;
+    creatingOffscreen = null;
+  }
+}
+
+async function hasDocument() {
+  if (typeof browser.offscreen !== 'undefined') {
+    const matchedClients = await (
+      browser as unknown as { clients: { matchAll: () => Promise<Array<{ url: string }>> } }
+    ).clients.matchAll();
+    return matchedClients.some((c) => c.url.includes(browser.runtime.id));
+  }
+  return false;
+}
 // Global cache for summary engines to enable incremental updates
 const summaryEngines: Record<string, SummaryEngine> = {};
 
-function getEngine(platformId: string, maxContext: number): TokenEngine {
-  if (!tokenEngines[platformId]) {
-    tokenEngines[platformId] = new TokenEngine(platformId, maxContext);
-  }
-  return tokenEngines[platformId];
+// Global cache for current session messages (used for regeneration)
+const sessionMessages: Record<string, ChatMessage[]> = {};
+const degradationEngine = new DegradationEngine();
+
+interface SidePanelBrowser {
+  sidePanel?: {
+    setPanelBehavior(options: { openPanelOnActionClick: boolean }): Promise<void>;
+    open(options: { tabId: number }): Promise<void>;
+  };
+}
+
+function getSidePanelApi() {
+  return (browser as typeof browser & SidePanelBrowser).sidePanel;
 }
 
 function getSummaryEngine(platformId: string): SummaryEngine {
@@ -27,6 +60,18 @@ function getSummaryEngine(platformId: string): SummaryEngine {
   return summaryEngines[platformId];
 }
 
+// Enable session storage access for content scripts (Crucial for WXT HMR and runtime state)
+if (
+  typeof chrome !== 'undefined' &&
+  chrome.storage &&
+  chrome.storage.session &&
+  chrome.storage.session.setAccessLevel
+) {
+  chrome.storage.session
+    .setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })
+    .catch(console.error);
+}
+
 export default defineBackground(() => {
   console.log('AI Context Tracker: Background Service Worker initialized');
 
@@ -34,95 +79,175 @@ export default defineBackground(() => {
   browser.runtime.onInstalled.addListener(async (details) => {
     if (details.reason === 'install') {
       await storageLayer.appState.setValue(defaultState);
-      
+
       // Ensure the side panel opens when clicking the extension action icon
-      if (browser.sidePanel) {
-        await browser.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
+      const sidePanel = getSidePanelApi();
+      if (sidePanel) {
+        await sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
       }
     }
   });
 
+  browser.tabs.onActivated.addListener(async (activeInfo) => {
+    await storageLayer.activeTabId.setValue(activeInfo.tabId);
+  });
+
   // Re-verify side panel behavior on startup just in case
-  if (browser.sidePanel) {
-    browser.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
+  const sidePanel = getSidePanelApi();
+  if (sidePanel) {
+    sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
   }
 
   // Main Event Router
   messaging.addListener(async (message: ExtensionMessage, sender) => {
     switch (message.type) {
       case 'GET_STATE': {
-        const state = await storageLayer.appState.getValue();
+        const tabId =
+          typeof sender === 'object' && sender !== null && 'tab' in sender
+            ? (sender as { tab?: { id?: number } }).tab?.id
+            : undefined;
+        const state = await storageLayer.appState.getValue(tabId);
         return state;
       }
-      
+
       case 'CONTENT_MUTATION': {
         const { messages, platform } = message.payload;
-        
+
+        // Cache the current session messages for regeneration
+        sessionMessages[platform] = messages;
+
+        const tabId =
+          typeof sender === 'object' && sender !== null && 'tab' in sender
+            ? (sender as { tab?: { id?: number } }).tab?.id
+            : undefined;
+
         // 1. Get current state to read thresholds and context limit
-        const state = await storageLayer.appState.getValue();
+        const state = await storageLayer.appState.getValue(tabId);
         const limit = state.stats.contextLimit;
-        
-        // 2. Run Token Engine
-        const engine = getEngine(platform, limit);
-        const estimate = await engine.estimateConversation(messages);
-        
+
+        // 2. Ensure Offscreen Document exists and send Tokenize Request
+        await setupOffscreenDocument('offscreen/index.html');
+
+        let estimate;
+        try {
+          estimate = await browser.runtime.sendMessage({
+            type: 'TOKENIZE_REQUEST',
+            payload: {
+              platformId: platform,
+              maxContext: limit,
+              messages,
+            },
+          });
+        } catch (err) {
+          console.error('Tokenization failed:', err);
+          estimate = { totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, confidence: 0 };
+        }
         // 3. Run Summary Engine (Incremental)
         const summaryEngine = getSummaryEngine(platform);
         const currentSummary = summaryEngine.processIncremental(messages);
-        
-        // 4. Calculate UI Status based on preferences
-        const percentUsed = (estimate.totalTokens / limit) * 100;
-        let status: HealthStatus = 'healthy';
-        
-        if (percentUsed >= state.thresholds.critical) {
-          status = 'critical';
-        } else if (percentUsed >= state.thresholds.warning) {
-          status = 'warning';
-        } else if (percentUsed >= state.thresholds.caution) {
-          status = 'caution';
-        }
-        
-        // 5. Update the centralized state natively
-        await storageLayer.updateAppState({
-          tokenEstimate: {
-            count: estimate.totalTokens,
-            confidence: estimate.confidence,
-            isStreaming: false
-          },
-          platform: platform as any,
-          status,
-          currentSummary,
-          stats: {
-            ...state.stats,
-            turns: messages.filter(m => m.role === 'user').length
-          }
+
+        // 4. Calculate live health from actual extracted messages
+        const healthScore = degradationEngine.evaluate({
+          messages,
+          totalTokens: estimate.totalTokens,
+          contextLimit: limit,
+          thresholds: state.thresholds,
         });
-        
+
+        // 5. Update the centralized state
+        const turns = messages.filter((m) => m.role === 'user').length || 1;
+
+        await storageLayer.updateAppState(
+          {
+            tokenEstimate: {
+              count: estimate.totalTokens,
+              inputCount: estimate.totalInputTokens,
+              outputCount: estimate.totalOutputTokens,
+              confidence: estimate.confidence,
+              isStreaming: false,
+            },
+            platform,
+            status: healthScore.status,
+            currentSummary,
+            stats: {
+              ...state.stats,
+              turns,
+              avgTokensPerTurn: estimate.totalTokens / turns,
+              healthMetrics: degradationEngine.toLegacyMetrics(healthScore),
+            },
+          },
+          tabId
+        );
+
         return { success: true };
       }
 
       case 'UPDATE_TOKEN_COUNT': {
+        const tabId =
+          typeof sender === 'object' && sender !== null && 'tab' in sender
+            ? (sender as { tab?: { id?: number } }).tab?.id
+            : undefined;
         // Legacy fallback or direct UI override
         const { count, platform } = message.payload;
-        await storageLayer.updateAppState({
-          tokenEstimate: { count, confidence: 0.95, isStreaming: false },
-          platform: platform as any
-        });
+        await storageLayer.updateAppState(
+          {
+            tokenEstimate: {
+              count,
+              inputCount: count / 2,
+              outputCount: count / 2,
+              confidence: 0.95,
+              isStreaming: false,
+            },
+            platform,
+          },
+          tabId
+        );
         return { success: true };
       }
 
+      case 'REGENERATE_SUMMARY': {
+        const tabId =
+          typeof sender === 'object' && sender !== null && 'tab' in sender
+            ? (sender as { tab?: { id?: number } }).tab?.id
+            : undefined;
+        // Find the current platform's cached messages and force a full regeneration
+        const state = await storageLayer.appState.getValue(tabId);
+        const platform: PlatformId = state.platform || 'chatgpt';
+        const messages = sessionMessages[platform];
+
+        if (messages && messages.length > 0) {
+          const summaryEngine = getSummaryEngine(platform);
+          const freshSummary = summaryEngine.regenerate(messages);
+
+          await storageLayer.updateAppState(
+            {
+              currentSummary: freshSummary,
+            },
+            tabId
+          );
+
+          return { success: true };
+        }
+
+        return { success: false, error: 'No session messages to regenerate from' };
+      }
+
       case 'OPEN_SIDE_PANEL': {
-        if (browser.sidePanel && sender.tab?.id) {
-          await browser.sidePanel.open({ tabId: sender.tab.id });
+        const tabId =
+          typeof sender === 'object' && sender !== null && 'tab' in sender
+            ? (sender as { tab?: { id?: number } }).tab?.id
+            : undefined;
+        const currentSidePanel = getSidePanelApi();
+        if (currentSidePanel && tabId) {
+          await currentSidePanel.open({ tabId });
           return { success: true };
         }
         return { success: false, error: 'Side panel API not available or no tab ID' };
       }
 
       default:
-        console.warn('[Background] Unhandled message type:', (message as any).type);
+        console.warn('[Background] Unhandled message type:', message.type);
         return { success: false, error: 'Unhandled message type' };
     }
   });
-
 });

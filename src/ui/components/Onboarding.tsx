@@ -1,164 +1,100 @@
-import { useState } from 'preact/hooks';
-import { useAppState } from '../hooks/useAppState';
-import { ArrowRight, Check, Sparkles, Activity, ArrowRightLeft, Shield, Moon, Sun, Monitor } from 'lucide-preact';
-import { AppState } from '../../storage';
+import {
+  Brain,
+  Gauge,
+  HeartPulse,
+  ArrowRightLeft,
+  ShieldCheck,
+  ArrowRight,
+  CheckCircle2,
+} from 'lucide-preact';
 
 interface OnboardingProps {
   onFinish?: () => void;
 }
 
 export function Onboarding({ onFinish }: OnboardingProps) {
-  const [step, setStep] = useState(1);
-  const state = useAppState();
-
-  const updateSettings = async (updates: Partial<AppState>) => {
-    const { storageLayer } = await import('../../storage');
-    await storageLayer.updateAppState(updates);
-  };
-
-  const nextStep = () => setStep(s => s + 1);
-  const finish = () => {
-    if (onFinish) onFinish();
-  };
-
-  if (step === 1) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[var(--bg-primary)] p-6 text-[var(--text-primary)]">
-        <div className="max-w-xl w-full animate-in fade-in slide-in-from-bottom-4 duration-500 text-center">
-          
-          <div className="w-24 h-24 mx-auto bg-[var(--accent-gradient)] rounded-3xl flex items-center justify-center mb-8 shadow-[var(--shadow-card)] relative group cursor-default">
-            <div className="absolute inset-0 bg-white/20 rounded-3xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
-            <Sparkles size={40} className="text-white" />
-          </div>
-
-          <h1 className="text-4xl font-bold mb-4 tracking-tight">Welcome to AI Context Tracker</h1>
-          <p className="text-lg text-[var(--text-secondary)] mb-10 leading-relaxed max-w-md mx-auto">
-            Take control of your AI conversations. Monitor context limits, prevent memory degradation, and transfer knowledge across platforms effortlessly.
-          </p>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12 text-left">
-            <div className="p-5 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] flex flex-col items-center text-center">
-              <Activity size={24} className="text-[var(--accent-cyan)] mb-3" />
-              <h3 className="font-semibold mb-2">Track Context</h3>
-              <p className="text-xs text-[var(--text-muted)]">Real-time visibility into token consumption.</p>
-            </div>
-            <div className="p-5 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] flex flex-col items-center text-center">
-              <Shield size={24} className="text-[var(--status-caution)] mb-3" />
-              <h3 className="font-semibold mb-2">Health Alerts</h3>
-              <p className="text-xs text-[var(--text-muted)]">Get warned before the AI forgets context.</p>
-            </div>
-            <div className="p-5 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] flex flex-col items-center text-center">
-              <ArrowRightLeft size={24} className="text-[var(--accent-purple)] mb-3" />
-              <h3 className="font-semibold mb-2">Smart Transfer</h3>
-              <p className="text-xs text-[var(--text-muted)]">Move context smoothly between platforms.</p>
-            </div>
-          </div>
-
-          <button onClick={nextStep} className="inline-flex items-center gap-2 px-8 py-3.5 bg-[var(--accent-gradient)] text-white rounded-xl font-semibold hover:shadow-lg hover:scale-105 transition-all text-lg">
-            Get Started <ArrowRight size={20} />
-          </button>
-          
-          <p className="text-xs text-[var(--text-muted)] mt-6 font-medium tracking-wide uppercase">100% Local • Zero Data Collection</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (step === 2) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[var(--bg-primary)] p-6 text-[var(--text-primary)]">
-        <div className="max-w-xl w-full animate-in fade-in slide-in-from-right-8 duration-500">
-          
-          <div className="text-center mb-10">
-            <h2 className="text-3xl font-bold mb-3 tracking-tight">Quick Setup</h2>
-            <p className="text-[var(--text-secondary)]">Let's tailor the experience to your workflow.</p>
-          </div>
-
-          <div className="flex flex-col gap-6 mb-10">
-            
-            {/* Theme Selection */}
-            <div className="p-6 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)]">
-              <h3 className="font-semibold mb-4 text-center">Choose your theme</h3>
-              <div className="flex gap-4">
-                {(['dark', 'light', 'system'] as const).map(t => (
-                  <button
-                    key={t}
-                    onClick={() => updateSettings({ theme: t })}
-                    className={`flex-1 flex flex-col items-center gap-3 p-4 rounded-xl border-2 transition-all capitalize font-medium ${
-                      state.theme === t 
-                        ? 'border-[var(--accent-cyan)] bg-[var(--accent-cyan)]/10 text-[var(--accent-cyan)]' 
-                        : 'border-[var(--border-subtle)] hover:border-[var(--text-muted)] text-[var(--text-secondary)]'
-                    }`}
-                  >
-                    {t === 'dark' && <Moon size={24} />}
-                    {t === 'light' && <Sun size={24} />}
-                    {t === 'system' && <Monitor size={24} />}
-                    {t}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Platforms */}
-            <div className="p-6 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border-subtle)] text-center">
-              <h3 className="font-semibold mb-2">Supported Platforms Active</h3>
-              <p className="text-sm text-[var(--text-muted)] mb-5">Context Tracker runs automatically on these sites.</p>
-              
-              <div className="flex justify-center gap-6">
-                <div className="flex flex-col items-center gap-2 text-[var(--accent-cyan)]">
-                  <div className="w-12 h-12 rounded-full bg-[var(--accent-cyan)]/20 flex items-center justify-center">
-                    <Check size={20} />
-                  </div>
-                  <span className="text-xs font-semibold">ChatGPT</span>
-                </div>
-                <div className="flex flex-col items-center gap-2 text-[var(--accent-purple)]">
-                  <div className="w-12 h-12 rounded-full bg-[var(--accent-purple)]/20 flex items-center justify-center">
-                    <Check size={20} />
-                  </div>
-                  <span className="text-xs font-semibold">Claude</span>
-                </div>
-                <div className="flex flex-col items-center gap-2 text-[#4285F4]">
-                  <div className="w-12 h-12 rounded-full bg-[#4285F4]/20 flex items-center justify-center">
-                    <Check size={20} />
-                  </div>
-                  <span className="text-xs font-semibold">Gemini</span>
-                </div>
-              </div>
-            </div>
-            
-          </div>
-
-          <div className="flex gap-4">
-            <button onClick={() => setStep(1)} className="px-6 py-3 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] hover:bg-[var(--bg-tertiary)] rounded-xl font-semibold transition-colors">
-              Back
-            </button>
-            <button onClick={nextStep} className="flex-1 flex justify-center items-center gap-2 py-3 bg-[var(--text-primary)] text-[var(--bg-primary)] rounded-xl font-semibold hover:opacity-90 transition-opacity">
-              Continue
-            </button>
-          </div>
-          
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-[var(--bg-primary)] p-6 text-[var(--text-primary)]">
-      <div className="max-w-xl w-full animate-in zoom-in duration-500 text-center">
-        
-        <div className="w-24 h-24 mx-auto bg-green-500/20 rounded-full flex items-center justify-center mb-8 border-4 border-green-500/30">
-          <Check size={48} className="text-green-500" />
+    <div className="flex flex-col items-center justify-center min-h-screen bg-[#0a0a0c] p-6 text-[#f4f4f5]">
+      <div className="max-w-4xl w-full flex flex-col items-center animate-in fade-in slide-in-from-bottom-4 duration-500 text-center">
+        {/* Brain Icon */}
+        <div className="mb-8 relative">
+          <div className="absolute inset-0 bg-gradient-to-r from-cyan-400 to-purple-500 blur-3xl opacity-20"></div>
+          <Brain
+            size={80}
+            className="text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-500 relative drop-shadow-[0_0_15px_rgba(34,211,238,0.5)]"
+          />
         </div>
 
-        <h2 className="text-3xl font-bold mb-4 tracking-tight">You're all set!</h2>
-        <p className="text-lg text-[var(--text-secondary)] mb-10 leading-relaxed max-w-md mx-auto">
-          AI Context Tracker is running silently in the background. Open any supported AI chat platform to see the widget in action.
+        {/* Headings */}
+        <h1 className="text-[32px] md:text-[40px] font-bold mb-3 tracking-tight text-white">
+          Welcome to AI Context Tracker
+        </h1>
+        <p className="text-[16px] md:text-[18px] text-[#a1a1aa] mb-12 max-w-lg mx-auto">
+          Never lose context in your AI conversations again.
         </p>
 
-        <button onClick={finish} className="inline-flex items-center gap-2 px-8 py-3.5 bg-[var(--accent-gradient)] text-white rounded-xl font-semibold hover:shadow-lg hover:scale-105 transition-all text-lg">
-          Complete Setup
+        {/* Feature Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12 w-full max-w-3xl">
+          <div className="p-6 rounded-2xl bg-[#121216] border border-[#2a2a30] flex flex-col items-center text-center hover:border-[#3f3f46] transition-colors">
+            <Gauge size={32} className="text-[#22d3ee] mb-4" />
+            <h3 className="text-[18px] font-semibold mb-2 text-white">Track Context</h3>
+            <p className="text-[14px] text-[#a1a1aa] leading-snug px-2">
+              Real-time token counting and context window monitoring
+            </p>
+          </div>
+
+          <div className="p-6 rounded-2xl bg-[#121216] border border-[#2a2a30] flex flex-col items-center text-center hover:border-[#3f3f46] transition-colors">
+            <HeartPulse size={32} className="text-[#4ade80] mb-4" />
+            <h3 className="text-[18px] font-semibold mb-2 text-white">Health Alerts</h3>
+            <p className="text-[14px] text-[#a1a1aa] leading-snug px-2">
+              Know when your AI starts forgetting earlier instructions
+            </p>
+          </div>
+
+          <div className="p-6 rounded-2xl bg-[#121216] border border-[#2a2a30] flex flex-col items-center text-center hover:border-[#3f3f46] transition-colors">
+            <ArrowRightLeft size={32} className="text-[#a855f7] mb-4" />
+            <h3 className="text-[18px] font-semibold mb-2 text-white">Smart Transfer</h3>
+            <p className="text-[14px] text-[#a1a1aa] leading-snug px-2">
+              Generate summaries to continue conversations anywhere
+            </p>
+          </div>
+        </div>
+
+        {/* Supported Platforms */}
+        <div className="flex justify-center items-center gap-6 mb-12">
+          <div className="flex items-center gap-1.5">
+            <div className="w-8 h-8 rounded-full bg-[#10a37f] flex items-center justify-center text-white font-bold text-xs">
+              GPT
+            </div>
+            <CheckCircle2 size={16} className="text-[#4ade80]" fill="currentColor" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-8 h-8 rounded-md bg-[#d97757] flex items-center justify-center text-white font-serif font-bold text-xs">
+              Cl
+            </div>
+            <CheckCircle2 size={16} className="text-[#4ade80]" fill="currentColor" />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-8 h-8 rounded-full bg-white flex items-center justify-center text-[#4285F4] font-bold text-xl">
+              G
+            </div>
+            <CheckCircle2 size={16} className="text-[#a1a1aa]" fill="currentColor" />
+          </div>
+        </div>
+
+        {/* Action Button */}
+        <button
+          onClick={onFinish}
+          className="inline-flex items-center gap-2 px-10 py-3.5 bg-gradient-to-r from-[#22d3ee] to-[#a855f7] text-black rounded-full font-bold text-[16px] hover:shadow-[0_0_20px_rgba(34,211,238,0.4)] hover:scale-105 transition-all mb-8"
+        >
+          Get Started <ArrowRight size={20} />
         </button>
-        
+
+        {/* Footer */}
+        <div className="flex items-center gap-2 text-[13px] text-[#a1a1aa]">
+          <ShieldCheck size={16} />
+          <span>100% local · Zero data collection · Privacy first</span>
+        </div>
       </div>
     </div>
   );

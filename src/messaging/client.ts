@@ -1,11 +1,28 @@
 import { browser } from 'wxt/browser';
-import { ExtensionMessage, MessageResponse, MessageType } from './types';
+import { ExtensionMessage, MessageResponse } from './types';
+
+type MessageSender = Parameters<typeof browser.runtime.onMessage.addListener>[0] extends (
+  message: unknown,
+  sender: infer Sender,
+  sendResponse: (response?: unknown) => void
+) => unknown
+  ? Sender
+  : unknown;
+
+type MessageHandler = (
+  message: ExtensionMessage,
+  sender: MessageSender
+) => Promise<unknown> | unknown;
+
+function isExtensionMessage(message: unknown): message is ExtensionMessage {
+  return typeof message === 'object' && message !== null && 'type' in message;
+}
 
 export const messaging = {
   /**
    * Send a message from UI/Content script to the Background Service Worker.
    */
-  async sendToBackground<T = any>(message: ExtensionMessage): Promise<MessageResponse<T>> {
+  async sendToBackground<T = unknown>(message: ExtensionMessage): Promise<MessageResponse<T>> {
     try {
       const response = await browser.runtime.sendMessage(message);
       return response as MessageResponse<T>;
@@ -18,7 +35,10 @@ export const messaging = {
   /**
    * Send a message from Background to a specific Content Script tab.
    */
-  async sendToTab<T = any>(tabId: number, message: ExtensionMessage): Promise<MessageResponse<T>> {
+  async sendToTab<T = unknown>(
+    tabId: number,
+    message: ExtensionMessage
+  ): Promise<MessageResponse<T>> {
     try {
       const response = await browser.tabs.sendMessage(tabId, message);
       return response as MessageResponse<T>;
@@ -32,11 +52,14 @@ export const messaging = {
    * Add a typed listener for incoming messages.
    * Automatically handles sending the response asynchronously if the handler returns a promise.
    */
-  addListener(handler: (message: ExtensionMessage, sender: any) => Promise<any> | any) {
-    const listener = (message: any, sender: any, sendResponse: (response: any) => void) => {
-      // Validate it's our message format
-      if (message && message.type) {
-        const result = handler(message as ExtensionMessage, sender);
+  addListener(handler: MessageHandler) {
+    const listener = (
+      message: unknown,
+      sender: MessageSender,
+      sendResponse: (response: MessageResponse) => void
+    ) => {
+      if (isExtensionMessage(message)) {
+        const result = handler(message, sender);
         if (result instanceof Promise) {
           result.then(
             (data) => sendResponse({ success: true, data }),
@@ -53,5 +76,5 @@ export const messaging = {
 
     browser.runtime.onMessage.addListener(listener);
     return () => browser.runtime.onMessage.removeListener(listener);
-  }
+  },
 };
