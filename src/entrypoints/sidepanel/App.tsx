@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useState, useEffect } from 'preact/hooks';
 import { useAppState } from '../../ui/hooks/useAppState';
 import { ContextMeter } from '../../ui/components/ContextMeter';
 import { PlatformBadge } from '../../ui/components/PlatformBadge';
@@ -17,6 +17,13 @@ import {
 type Tab = 'dashboard' | 'summary' | 'history' | 'settings';
 
 export function App() {
+  useEffect(() => {
+    console.log('[SidePanel] Panel mounted');
+    return () => console.log('[SidePanel] Component unmounted');
+  }, []);
+  
+  console.log('[SidePanel] React rerender');
+
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const status = useAppState((s) => s.status);
   const tokenEstimate = useAppState((s) => s.tokenEstimate);

@@ -59,6 +59,19 @@ export const useAppState = create<AppStore>((set, get) => ({
     // 2. Watch for changes across contexts
     storageLayer.watchAppState((newState) => {
       if (newState) {
+        console.log(`[SidePanel] Storage changed via storage sync.`);
+        
+        // Check what changed
+        const currentTokens = get().tokenEstimate.count;
+        if (newState.tokenEstimate.count !== currentTokens) {
+          console.log(`[SidePanel] Context updated (Tokens changed: ${currentTokens} -> ${newState.tokenEstimate.count})`);
+        }
+        
+        const currentSummary = get().currentSummary;
+        if (newState.currentSummary && newState.currentSummary.id !== currentSummary?.id) {
+          console.log(`[SidePanel] Summary updated (New ID: ${newState.currentSummary.id})`);
+        }
+
         console.log(`[UI] State updated via storage sync. Tokens: ${newState.tokenEstimate.count}, Status: ${newState.status}`);
         set({ ...newState });
       }
