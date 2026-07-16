@@ -1,9 +1,9 @@
-import { useRef, useEffect } from 'preact/hooks';
+import { useRef, useEffect, useState } from 'preact/hooks';
 import { useAppState } from '../../../ui/hooks/useAppState';
 import { PlatformBadge } from '../../../ui/components/PlatformBadge';
 import { ContextMeter } from '../../../ui/components/ContextMeter';
 import { HealthBadge } from '../../../ui/components/HealthBadge';
-import { ChevronDown, X, ArrowRight } from 'lucide-preact';
+import { ChevronDown, X, ArrowRight, MousePointer2 } from 'lucide-preact';
 import { HealthStatus } from '../../../shared/types';
 
 export function Widget() {
@@ -24,6 +24,11 @@ export function Widget() {
   const hasMoved = useRef(false);
   const startPos = useRef({ x: 0, y: 0 });
   const dragOffset = useRef({ x: 0, y: 0 });
+  const [isHovered, setIsHovered] = useState(false);
+
+  // Determine actual expanded state (can be forced expanded, or temporarily expanded on hover)
+  // For a dynamic island feel, maybe we expand on hover if collapsed, or toggle via click.
+  const isExpanded = !widgetCollapsed || isHovered;
 
   const getStatusColors = (s: HealthStatus) => {
     switch (s) {
@@ -32,35 +37,40 @@ export function Widget() {
           dot: 'bg-[#4ade80]',
           text: 'text-[#22d3ee]',
           border: 'border-white/10',
-          shadow: '',
+          shadow: 'shadow-[0_8px_32px_rgba(0,0,0,0.4)]',
+          glow: 'shadow-[0_0_12px_rgba(74,222,128,0.4)]',
         };
       case 'caution':
         return {
           dot: 'bg-[#eab308]',
           text: 'text-[#eab308]',
-          border: 'border-[#eab308]/50',
-          shadow: 'shadow-[inset_0_0_15px_rgba(234,179,8,0.2),_0_0_15px_rgba(234,179,8,0.2)]',
+          border: 'border-[#eab308]/40',
+          shadow: 'shadow-[0_8px_32px_rgba(234,179,8,0.15)]',
+          glow: 'shadow-[0_0_12px_rgba(234,179,8,0.5)]',
         };
       case 'warning':
         return {
           dot: 'bg-[#f97316]',
           text: 'text-[#f97316]',
           border: 'border-[#f97316]/50',
-          shadow: 'shadow-[inset_0_0_15px_rgba(249,115,22,0.3),_0_0_15px_rgba(249,115,22,0.3)]',
+          shadow: 'shadow-[0_8px_32px_rgba(249,115,22,0.2)]',
+          glow: 'shadow-[0_0_12px_rgba(249,115,22,0.6)]',
         };
       case 'critical':
         return {
           dot: 'bg-[#ef4444]',
           text: 'text-[#ef4444]',
           border: 'border-[#ef4444]/60',
-          shadow: 'shadow-[inset_0_0_20px_rgba(239,68,68,0.4),_0_0_20px_rgba(239,68,68,0.4)]',
+          shadow: 'shadow-[0_8px_32px_rgba(239,68,68,0.3)]',
+          glow: 'shadow-[0_0_15px_rgba(239,68,68,0.8)]',
         };
       default:
         return {
           dot: 'bg-[#4ade80]',
           text: 'text-[#22d3ee]',
           border: 'border-white/10',
-          shadow: '',
+          shadow: 'shadow-[0_8px_32px_rgba(0,0,0,0.4)]',
+          glow: 'shadow-[0_0_12px_rgba(74,222,128,0.4)]',
         };
     }
   };
@@ -68,7 +78,7 @@ export function Widget() {
   const colors = getStatusColors(status);
   const tokenText =
     tokenEstimate.count >= 1000
-      ? (tokenEstimate.count / 1000).toFixed(0) + 'K'
+      ? (tokenEstimate.count / 1000).toFixed(1) + 'K'
       : tokenEstimate.count.toString();
   const limitText =
     stats.contextLimit >= 1000
@@ -86,14 +96,15 @@ export function Widget() {
       hasMoved.current = true;
       const newLeft = e.clientX - dragOffset.current.x;
       const newTop = e.clientY - dragOffset.current.y;
-      const rect = widgetRef.current?.getBoundingClientRect();
-      const height = rect ? rect.height : widgetCollapsed ? 36 : 200;
-      const width = rect ? rect.width : widgetCollapsed ? 180 : 240;
+      
+      const height = isExpanded ? 240 : 44;
+      const width = isExpanded ? 260 : 160;
+      
       const newBottom = window.innerHeight - (newTop + height);
 
       const maxLeft = window.innerWidth - width;
-      const clampedLeft = Math.max(0, Math.min(newLeft, maxLeft));
-      const clampedBottom = Math.max(0, Math.min(newBottom, window.innerHeight - height));
+      const clampedLeft = Math.max(16, Math.min(newLeft, maxLeft - 16));
+      const clampedBottom = Math.max(16, Math.min(newBottom, window.innerHeight - height - 16));
 
       if (widgetRef.current) {
         widgetRef.current.style.left = `${clampedLeft}px`;
@@ -122,10 +133,9 @@ export function Widget() {
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('pointercancel', onPointerUp);
     };
-  }, [widgetCollapsed, setWidgetPosition]);
+  }, [isExpanded, setWidgetPosition]);
 
   const onPointerDown = (e: preact.JSX.TargetedPointerEvent<HTMLDivElement>) => {
-    // Prevent drag if clicking a button
     if ((e.target as HTMLElement).closest('button, a')) return;
 
     isDragging.current = true;
@@ -142,99 +152,114 @@ export function Widget() {
     }
   };
 
-  const handlePillClick = () => {
-    if (!hasMoved.current) {
+  const handleWidgetClick = (e: preact.JSX.TargetedMouseEvent<HTMLDivElement>) => {
+    if (!hasMoved.current && !(e.target as HTMLElement).closest('button, a')) {
       toggleWidget();
     }
   };
 
-  const style = {
-    position: 'fixed' as const,
-    left: `${widgetPosition.x}px`,
-    bottom: `${widgetPosition.y}px`,
-    zIndex: 2147483647,
-  };
-
-  if (widgetCollapsed) {
-    return (
-      <div
-        ref={widgetRef}
-        style={style}
-        onPointerDown={onPointerDown}
-        onClick={handlePillClick}
-        className={`flex items-center justify-between w-[180px] h-[36px] rounded-full bg-[#0f0f14]/85 backdrop-blur-[18px] border px-4 cursor-pointer select-none hover:bg-[#151520]/90 transition-all ${colors.border} ${colors.shadow}`}
-      >
-        <div className="flex items-center gap-2.5">
-          <div className="relative flex items-center justify-center">
-            {status === 'critical' && (
-              <div className="absolute inset-0 rounded-full bg-[#ef4444] opacity-75 animate-ping"></div>
-            )}
-            <div
-              className={`w-2.5 h-2.5 rounded-full ${colors.dot} shadow-[0_0_8px_currentColor]`}
-            ></div>
-          </div>
-          <span className="text-white font-bold text-[14px] leading-none">
-            {Math.round(fillPercentage)}%
-          </span>
-        </div>
-
-        <div className="w-[1px] h-[16px] bg-white/10 mx-2"></div>
-
-        <div className="flex items-center gap-2">
-          <span className={`font-bold text-[14px] leading-none ${colors.text}`}>{tokenText}</span>
-          <ChevronDown size={16} className="text-[#a1a1aa]" />
-        </div>
-      </div>
-    );
-  }
+  // -----------------------------------------
+  // RENDER DYNAMIC ISLAND
+  // -----------------------------------------
+  
+  // Base structural classes for smooth dynamic transitions
+  const containerClasses = [
+    'fixed z-[2147483647] flex flex-col items-center select-none overflow-hidden',
+    'bg-[#09090b]/85 backdrop-blur-2xl border', // Premium deep dark glassmorphism
+    colors.border,
+    colors.shadow,
+    'transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]', // Snappy but smooth spring-like curve
+    isExpanded ? 'w-[260px] h-[240px] rounded-[32px] p-4 cursor-move' : 'w-[140px] h-[40px] rounded-full px-4 justify-center hover:bg-[#121217]/95 cursor-pointer'
+  ].join(' ');
 
   return (
     <div
       ref={widgetRef}
-      style={style}
-      className={`w-[240px] h-[200px] rounded-2xl bg-[#0f0f14]/90 backdrop-blur-[18px] border border-[#2a2a30] shadow-2xl flex flex-col items-center select-none ${colors.shadow}`}
+      style={{ left: `${widgetPosition.x}px`, bottom: `${widgetPosition.y}px` }}
+      className={containerClasses}
+      onPointerDown={onPointerDown}
+      onClick={handleWidgetClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
     >
-      {/* Header Area (Draggable) */}
-      <div
-        className="w-full flex justify-between items-center px-4 pt-3 pb-1 cursor-move"
-        onPointerDown={onPointerDown}
+      {/* ------------------------------------- */}
+      {/* COLLAPSED / HEADER STATE              */}
+      {/* ------------------------------------- */}
+      <div 
+        className={`w-full flex items-center justify-between transition-all duration-300 ${isExpanded ? 'h-6 mb-3' : 'h-full'}`}
       >
-        <div className="text-[13px] font-semibold text-white">Context Tracker</div>
+        {/* Left Side: Status Dot & Percentage */}
+        <div className="flex items-center gap-2">
+          <div className="relative flex items-center justify-center">
+            {status === 'critical' && (
+              <div className="absolute inset-0 rounded-full bg-[#ef4444] opacity-75 animate-ping"></div>
+            )}
+            <div className={`w-2.5 h-2.5 rounded-full ${colors.dot} ${colors.glow}`}></div>
+          </div>
+          <span className={`font-semibold tracking-tight transition-all duration-300 ${isExpanded ? 'text-white text-[14px]' : 'text-white text-[15px]'}`}>
+            {Math.round(fillPercentage)}%
+          </span>
+        </div>
+
+        {/* Center line only in collapsed mode */}
+        {!isExpanded && (
+          <div className="w-[1px] h-[16px] bg-white/10 mx-1"></div>
+        )}
+
+        {/* Right Side: Token count or Close Button */}
+        <div className="flex items-center">
+          {!isExpanded ? (
+            <span className={`font-semibold tracking-tight text-[15px] ${colors.text}`}>{tokenText}</span>
+          ) : (
+            <button
+              onClick={(e) => { e.stopPropagation(); toggleWidget(); setIsHovered(false); }}
+              className="text-[#a1a1aa] hover:text-white transition-colors cursor-pointer rounded-full bg-white/5 hover:bg-white/10 p-1 pointer-events-auto"
+            >
+              <X size={14} strokeWidth={2.5} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ------------------------------------- */}
+      {/* EXPANDED CONTENT AREA                 */}
+      {/* ------------------------------------- */}
+      <div 
+        className={`w-full flex flex-col items-center transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] origin-top ${
+          isExpanded ? 'opacity-100 scale-100 h-full' : 'opacity-0 scale-95 h-0 pointer-events-none'
+        }`}
+      >
+        {/* Circle Meter Area */}
+        <div className="relative flex-shrink-0 w-full flex justify-center pointer-events-none -mt-1">
+          <ContextMeter value={fillPercentage} variant="mini" status={status} />
+        </div>
+
+        {/* Metrics details */}
+        <div className="mt-2 flex flex-col items-center gap-1 w-full pointer-events-none">
+          <div className="text-[13px] font-medium text-[#a1a1aa] tracking-wide">
+            <span className="text-white font-semibold">{tokenText}</span> / {limitText} tokens
+          </div>
+          <div className="flex items-center gap-2 mt-1.5">
+             <HealthBadge status={status} />
+             <PlatformBadge platform={platform} />
+          </div>
+        </div>
+
+        <div className="flex-grow"></div>
+
+        {/* Dashboard Link - Full Width Button style */}
         <button
-          onClick={toggleWidget}
-          className="text-[#a1a1aa] hover:text-white transition-colors cursor-pointer rounded-md hover:bg-white/10 p-0.5 pointer-events-auto"
+          onClick={(e) => { e.stopPropagation(); openSidePanel(); }}
+          className="w-full h-[42px] mt-1 bg-white/5 hover:bg-white/10 border border-white/5 rounded-[14px] flex items-center justify-center gap-2 text-[14px] font-semibold text-white transition-all pointer-events-auto shadow-sm active:scale-95 group"
         >
-          <X size={14} />
+          View Dashboard <ArrowRight size={14} className="text-[#a1a1aa] group-hover:text-white transition-colors" />
         </button>
       </div>
 
-      {/* Circle Meter */}
-      <div className="mt-1 relative pointer-events-none">
-        <ContextMeter value={fillPercentage} variant="mini" status={status} />
+      {/* Drag Indicator (only visible when expanded) */}
+      <div className={`absolute bottom-1.5 flex justify-center w-full pointer-events-none transition-opacity duration-300 ${isExpanded ? 'opacity-30' : 'opacity-0'}`}>
+         <div className="w-8 h-1 rounded-full bg-white"></div>
       </div>
-
-      {/* Token text */}
-      <div className="mt-2 text-[12px] font-medium text-[#a1a1aa] pointer-events-none">
-        {tokenText} / {limitText} tokens
-      </div>
-
-      {/* Badges */}
-      <div className="mt-2 flex flex-col items-center gap-1.5 pointer-events-none">
-        <HealthBadge status={status} />
-        <PlatformBadge platform={platform} />
-      </div>
-
-      <div className="w-full px-5 mt-3 pointer-events-none">
-        <div className="w-full h-[3px] bg-[#eab308] rounded-full opacity-80"></div>
-      </div>
-
-      {/* Dashboard Link */}
-      <button
-        onClick={openSidePanel}
-        className="mt-3 flex items-center gap-1 text-[13px] font-medium text-[#22d3ee] hover:text-cyan-300 transition-colors cursor-pointer"
-      >
-        Dashboard <ArrowRight size={14} />
-      </button>
     </div>
   );
 }

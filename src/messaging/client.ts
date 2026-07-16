@@ -68,13 +68,13 @@ export const messaging = {
           return true; // Indicates asynchronous response
         } else {
           sendResponse({ success: true, data: result });
-          return false;
+          return undefined;
         }
       }
-      return false;
+      return undefined;
     };
 
-    browser.runtime.onMessage.addListener(listener);
-    return () => browser.runtime.onMessage.removeListener(listener);
+    browser.runtime.onMessage.addListener(listener as any);
+    return () => browser.runtime.onMessage.removeListener(listener as any);
   },
 };

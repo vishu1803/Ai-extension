@@ -9,6 +9,7 @@ import {
   Bug,
   ListTodo,
   MessageSquare,
+  type LucideIcon,
 } from 'lucide-preact';
 import { StructuredSummary } from '../../engines/summary/types';
 import { TransferSummaryModal } from './TransferSummaryModal';
@@ -26,7 +27,7 @@ export function SummaryScreen() {
     if (!currentSummary) return [];
 
     const list: {
-      icon: preact.ComponentType<{ size?: number; style?: object; className?: string }>;
+      icon: LucideIcon;
       title: string;
       items: string[];
       color: string;

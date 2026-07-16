@@ -20,26 +20,35 @@ export default defineContentScript({
   ],
   cssInjectionMode: 'ui',
   async main(ctx) {
-    console.log('AI Context Tracker: Content Script injected.');
+    console.log(`[Startup] AI Context Tracker: Content Script injected on ${window.location.href}`);
 
     const url = new URL(window.location.href);
     const adapter = detectPlatform(url);
 
     if (adapter) {
-      const state = await storageLayer.appState.getValue();
+      let state;
+      try {
+        state = await storageLayer.appState.getValue();
+      } catch (error) {
+        console.warn('[Startup] Failed to access storage (context restricted). Falling back to default tracking state.', error);
+        // Default state fallback guarantees the tracker and observer always start
+        const { defaultState } = await import('../storage');
+        state = defaultState;
+      }
+
       if (!state.trackingEnabled || !state.supportedPlatforms[adapter.id]) {
-        console.log(`AI Context Tracker: Tracking disabled for ${adapter.name}.`);
+        console.log(`[Startup] Tracking disabled for ${adapter.name}. Observer not started.`);
         return;
       }
 
-      console.log(`Detected Platform: ${adapter.name}`);
+      console.log(`[Startup] Detected Platform: ${adapter.name}. Initializing engine.`);
 
       // Initialize Robust DOM Engine
       const engine = new RobustDOMEngine(
         () => adapter.extractMessages(),
         (fullText) => {
           console.log(
-            `[Adapter: ${adapter.name}] Conversation updated. Length: ${fullText.length}`
+            `[Extractor] Conversation updated for ${adapter.name}. Full text length: ${fullText.length} characters.`
           );
 
           // Send all extracted messages to Token Engine via background service worker
@@ -60,7 +69,7 @@ export default defineContentScript({
       // Mount the UI widget
       await mountWidget(ctx);
     } else {
-      console.log('No matching AI platform adapter found for this URL.');
+      console.log('[Startup] No matching AI platform adapter found for this URL.');
     }
   },
 });

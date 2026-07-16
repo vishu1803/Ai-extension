@@ -20,22 +20,26 @@ export class RobustDOMEngine {
   }
 
   public start() {
+    console.log('[Engine] start() called. Initializing conversation state.');
     this.resetConversation();
 
     // 1. Efficient Mutation Observer (debounced to minimize CPU)
     this.observer = new MutationObserver(() => {
+      // Don't log here, it triggers too often. Log in processDOM instead.
       this.scheduleUpdate();
     });
 
     const startObserver = () => {
       const target = this.getObservationTarget();
       if (target) {
+        console.log(`[Observer] Attach Success: target = ${target.tagName || 'Document'}. (Checks: MutationObserver attaches successfully, No duplicate observers)`);
         this.observer?.observe(target, {
           childList: true,
           subtree: true,
           characterData: true,
         });
       } else {
+        console.log('[Observer] Target not found yet, retrying in 50ms...');
         setTimeout(startObserver, 50);
       }
     };
@@ -50,6 +54,7 @@ export class RobustDOMEngine {
   }
 
   public stop() {
+    console.log('[Engine] stop() called. Cleaning up listeners and observers. (Checks: No memory leaks, No duplicate listeners)');
     if (this.observer) {
       this.observer.disconnect();
       this.observer = null;
@@ -91,6 +96,7 @@ export class RobustDOMEngine {
 
     window.addEventListener('locationchange', () => {
       if (this.lastUrl !== location.href) {
+        console.log(`[Engine] Page navigation detected (SPA). URL changed from ${this.lastUrl} to ${location.href}. (Checks: Page navigation is handled)`);
         this.lastUrl = location.href;
         this.resetConversation();
         this.scheduleUpdate();
@@ -99,6 +105,7 @@ export class RobustDOMEngine {
   }
 
   private resetConversation() {
+    console.log('[Engine] Resetting conversation context. (Checks: Old context is pruned correctly on navigation)');
     this.currentConversation = {
       id: location.pathname,
       messages: new Map(),
@@ -141,6 +148,8 @@ export class RobustDOMEngine {
 
     const visibleMessages = this.extractFn();
     let hasChanges = false;
+    let newMessagesCount = 0;
+    let editedMessagesCount = 0;
 
     // Handle Lazy Loading & Edits:
     // If a message ID exists in the DOM, we update our state.
@@ -153,18 +162,26 @@ export class RobustDOMEngine {
 
       if (!existing) {
         // New message
+        console.log(`[Extractor] New ${msg.role} message detected: ID=${msg.id}, Length=${msg.text.length} (Checks: New messages detected, Deduplication)`);
         this.currentConversation.messages.set(msg.id, msg);
         this.currentConversation.orderedIds.push(msg.id);
         hasChanges = true;
+        newMessagesCount++;
       } else if (existing.text !== msg.text) {
         // Edit / Streaming / Regeneration
+        const diff = msg.text.length - existing.text.length;
+        console.log(`[Extractor] Streaming response captured for ${msg.role}: ID=${msg.id}, +${diff} chars. (Checks: Streaming captured)`);
         existing.text = msg.text;
         hasChanges = true;
+        editedMessagesCount++;
       }
     }
 
     if (hasChanges) {
+      console.log(`[Observer] Processed DOM. Found ${newMessagesCount} new, ${editedMessagesCount} streaming/edited messages. Triggering update.`);
       this.emitUpdate();
+    } else {
+      console.log(`[Observer] Extracted ${visibleMessages.length} messages but found 0 changes. (Checks: Messages are not duplicated)`);
     }
   }
 

@@ -5,7 +5,12 @@ import { Widget } from './Widget';
 import { ThemeProvider } from '../../../ui/components/ThemeProvider';
 import { NotificationManager } from '../../../ui/components/NotificationManager';
 
+import { useAppState } from '../../../ui/hooks/useAppState';
+
 export const mountWidget = async (ctx: ContentScriptContext) => {
+  // Initialize the state safely after the context is ready
+  useAppState.getState().init();
+
   const ui = await createShadowRootUi(ctx, {
     name: 'ai-context-tracker-widget',
     position: 'inline',

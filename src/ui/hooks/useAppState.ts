@@ -52,17 +52,18 @@ export const useAppState = create<AppStore>((set, get) => ({
   init: () => {
     // 1. Initial load from storage
     storageLayer.appState.getValue().then((state) => {
+      console.log(`[UI] Initial state loaded. Tokens: ${state.tokenEstimate.count}, Status: ${state.status}`);
       set({ ...state });
     });
 
     // 2. Watch for changes across contexts
     storageLayer.watchAppState((newState) => {
       if (newState) {
+        console.log(`[UI] State updated via storage sync. Tokens: ${newState.tokenEstimate.count}, Status: ${newState.status}`);
         set({ ...newState });
       }
     });
   }
 }));
 
-// Initialize the store immediately when the UI script loads
-useAppState.getState().init();
+

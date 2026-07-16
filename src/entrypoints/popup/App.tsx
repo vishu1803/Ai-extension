@@ -14,10 +14,8 @@ export function App() {
   const fillPercentage = Math.min((tokenEstimate.count / stats.contextLimit) * 100, 100);
 
   const openDashboard = () => {
-    // @ts-expect-error chrome.sidePanel might not be typed fully
     if (typeof chrome !== 'undefined' && chrome.sidePanel) {
-      // @ts-expect-error chrome.sidePanel might not be typed fully
-      chrome.sidePanel.open({ windowId: undefined }).catch(console.error);
+      (chrome.sidePanel.open as any)({ windowId: undefined }).catch(console.error);
     }
   };
 

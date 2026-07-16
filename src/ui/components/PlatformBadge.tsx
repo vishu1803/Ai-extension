@@ -30,6 +30,27 @@ export function PlatformBadge({ platform, modelName }: PlatformBadgeProps) {
       border: 'border-[#1B73E8]/20',
       label: modelName || 'Gemini Pro',
       icon: <Sparkles size={14} />
+    },
+    grok: {
+      color: 'text-[#FFFFFF]',
+      bg: 'bg-[#1D9BF0]/10',
+      border: 'border-[#1D9BF0]/20',
+      label: modelName || 'Grok',
+      icon: <Cpu size={14} />
+    },
+    x: {
+      color: 'text-[#FFFFFF]',
+      bg: 'bg-[#1D9BF0]/10',
+      border: 'border-[#1D9BF0]/20',
+      label: modelName || 'X',
+      icon: <Cpu size={14} />
+    },
+    perplexity: {
+      color: 'text-[#14b8a6]',
+      bg: 'bg-[#14b8a6]/10',
+      border: 'border-[#14b8a6]/20',
+      label: modelName || 'Perplexity',
+      icon: <Bot size={14} />
     }
   };
 

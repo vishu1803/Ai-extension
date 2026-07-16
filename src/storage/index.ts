@@ -191,6 +191,8 @@ export const storageLayer = {
   async updateAppState(updates: Partial<AppState>, tabId?: number) {
     const { runtimeUpdates, settingsUpdates, snapshotUpdates } = splitUpdates(updates);
     const updatePromises: Promise<void>[] = [];
+    
+    console.log(`[Storage] Saving state updates for keys: ${Object.keys(updates).join(', ')}`);
 
     if (Object.keys(runtimeUpdates).length > 0) {
       updatePromises.push(

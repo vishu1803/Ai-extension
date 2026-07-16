@@ -9,39 +9,56 @@ export const chatGptAdapter: PlatformAdapter = {
     return url.hostname.includes('chatgpt.com') || url.hostname.includes('chat.openai.com');
   },
 
-  observeSelector: 'main',
-
   extractMessages(): ChatMessage[] {
     const messages: ChatMessage[] = [];
-    // Try multiple selectors as ChatGPT frequently updates its DOM
-    let elements = document.querySelectorAll('[data-message-author-role]');
-
+    
+    // 1. Try standard author role attribute (Most common in modern ChatGPT)
+    let elements = Array.from(document.querySelectorAll('[data-message-author-role]'));
+    
+    // 2. Fallback: message articles
     if (elements.length === 0) {
-      // Fallback 1: message articles
-      elements = document.querySelectorAll('article');
+      elements = Array.from(document.querySelectorAll('article'));
+    }
+    
+    // 3. Fallback: modern conversation turns if data-attributes are missing
+    if (elements.length === 0) {
+      elements = Array.from(document.querySelectorAll('div[class*="conversation-turn"]'));
+    }
+    
+    // 4. Fallback: raw prose/text blocks if all structural wrappers fail
+    if (elements.length === 0) {
+      const texts = Array.from(document.querySelectorAll('.prose, .whitespace-pre-wrap'));
+      // Filter out small nav elements or non-chat bubbles
+      elements = texts.filter(el => {
+        const text = (el as HTMLElement).innerText || '';
+        return text.length > 5;
+      });
     }
 
     elements.forEach((el, index) => {
       const id = el.getAttribute('data-message-id') || `msg-${index}`;
-
       let role: MessageRole = 'ai';
+      
       const roleAttr = el.getAttribute('data-message-author-role');
       if (roleAttr === 'user') {
         role = 'user';
       } else if (roleAttr === 'assistant' || roleAttr === 'ai') {
         role = 'ai';
-      } else if (el.tagName.toLowerCase() === 'article') {
-        // Fallback role detection based on common DOM structures in articles
-        if (
-          el.querySelector('[data-message-author-role="user"]') ||
-          (el.textContent?.includes('You') && el.textContent?.length < 100)
-        ) {
+      } else {
+        // Fallback heuristic: user messages typically contain "You" or are aligned right, or don't have copy/paste buttons
+        const text = (el as HTMLElement).innerText || '';
+        const html = el.innerHTML || '';
+        
+        // If it's a raw .prose block without wrappers, it's usually AI. 
+        // User messages in ChatGPT usually don't have .prose but have .whitespace-pre-wrap
+        if (el.classList.contains('whitespace-pre-wrap') && !el.classList.contains('prose')) {
+          role = 'user';
+        } else if (text.startsWith('You\n') || html.includes('alt="User"')) {
           role = 'user';
         }
       }
 
       const text = (el as HTMLElement).innerText?.trim();
-
       if (text && text.length > 0) {
         messages.push({ id, role, text });
       }

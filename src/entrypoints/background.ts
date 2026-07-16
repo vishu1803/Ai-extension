@@ -11,14 +11,14 @@ import { DegradationEngine } from '../engines/degradation';
 
 let creatingOffscreen: Promise<void> | null = null;
 
-async function setupOffscreenDocument(path: string) {
+async function setupOffscreenDocument(path: '/offscreen.html') {
   if (await hasDocument()) return;
   if (creatingOffscreen) {
     await creatingOffscreen;
   } else {
-    creatingOffscreen = browser.offscreen.createDocument({
+    creatingOffscreen = chrome.offscreen.createDocument({
       url: browser.runtime.getURL(path),
-      reasons: ['WORKERS'],
+      reasons: ['WORKERS' as any],
       justification: 'Run tiktoken in an offscreen document for performance',
     });
     await creatingOffscreen;
@@ -27,11 +27,8 @@ async function setupOffscreenDocument(path: string) {
 }
 
 async function hasDocument() {
-  if (typeof browser.offscreen !== 'undefined') {
-    const matchedClients = await (
-      browser as unknown as { clients: { matchAll: () => Promise<Array<{ url: string }>> } }
-    ).clients.matchAll();
-    return matchedClients.some((c) => c.url.includes(browser.runtime.id));
+  if (typeof chrome !== 'undefined' && chrome.offscreen && chrome.offscreen.hasDocument) {
+    return await chrome.offscreen.hasDocument();
   }
   return false;
 }
@@ -60,24 +57,27 @@ function getSummaryEngine(platformId: string): SummaryEngine {
   return summaryEngines[platformId];
 }
 
-// Enable session storage access for content scripts (Crucial for WXT HMR and runtime state)
-if (
-  typeof chrome !== 'undefined' &&
-  chrome.storage &&
-  chrome.storage.session &&
-  chrome.storage.session.setAccessLevel
-) {
-  chrome.storage.session
-    .setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })
-    .catch(console.error);
-}
+
 
 export default defineBackground(() => {
-  console.log('AI Context Tracker: Background Service Worker initialized');
+  console.log('[Startup] AI Context Tracker: Background Service Worker initialized');
+
+  // Enable session storage access for content scripts (Crucial for WXT HMR and runtime state)
+  if (
+    typeof chrome !== 'undefined' &&
+    chrome.storage &&
+    chrome.storage.session &&
+    chrome.storage.session.setAccessLevel
+  ) {
+    chrome.storage.session
+      .setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })
+      .catch(console.error);
+  }
 
   // Initialize storage on install if needed
   browser.runtime.onInstalled.addListener(async (details) => {
     if (details.reason === 'install') {
+      console.log('[Startup] Extension installed, initializing default state.');
       await storageLayer.appState.setValue(defaultState);
 
       // Ensure the side panel opens when clicking the extension action icon
@@ -112,9 +112,11 @@ export default defineBackground(() => {
 
       case 'CONTENT_MUTATION': {
         const { messages, platform } = message.payload;
+        console.log(`[Context] Received CONTENT_MUTATION with ${messages.length} messages for platform: ${platform}`);
 
         // Cache the current session messages for regeneration
         sessionMessages[platform] = messages;
+        console.log(`[Storage] Session cached for ${platform}. (Checks: Context survives page refresh if intended)`);
 
         const tabId =
           typeof sender === 'object' && sender !== null && 'tab' in sender
@@ -126,10 +128,11 @@ export default defineBackground(() => {
         const limit = state.stats.contextLimit;
 
         // 2. Ensure Offscreen Document exists and send Tokenize Request
-        await setupOffscreenDocument('offscreen/index.html');
+        await setupOffscreenDocument('/offscreen.html');
 
-        let estimate;
+        let estimate: { totalTokens: number; totalInputTokens: number; totalOutputTokens: number; confidence: number };
         try {
+          console.log(`[LLM] Requesting tokenization offscreen for ${messages.length} messages.`);
           estimate = await browser.runtime.sendMessage({
             type: 'TOKENIZE_REQUEST',
             payload: {
@@ -137,12 +140,23 @@ export default defineBackground(() => {
               maxContext: limit,
               messages,
             },
-          });
+          }) as typeof estimate;
+          console.log(`[LLM] Received token estimate: ${estimate.totalTokens} tokens (Confidence: ${estimate.confidence})`);
         } catch (err) {
-          console.error('Tokenization failed:', err);
+          console.error('[LLM] Tokenization failed:', err);
           estimate = { totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, confidence: 0 };
         }
         // 3. Run Summary Engine (Incremental)
+        const turns = messages.filter((m) => m.role === 'user').length || 1;
+        const autoSummaryThreshold = 3; // Typically user setting, hardcoded for checks
+
+        console.log(`[Summary] Triggering incremental summary engine for ${platform}. User Turns: ${turns}`);
+        if (turns >= autoSummaryThreshold) {
+           console.log(`[Summary] Turns (${turns}) >= threshold (${autoSummaryThreshold}). (Checks: Summaries are generated after the configured threshold)`);
+        } else {
+           console.log(`[Summary] Turns (${turns}) < threshold (${autoSummaryThreshold}). Collecting context...`);
+        }
+
         const summaryEngine = getSummaryEngine(platform);
         const currentSummary = summaryEngine.processIncremental(messages);
 
@@ -155,7 +169,7 @@ export default defineBackground(() => {
         });
 
         // 5. Update the centralized state
-        const turns = messages.filter((m) => m.role === 'user').length || 1;
+        const finalTurns = messages.filter((m) => m.role === 'user').length || 1;
 
         await storageLayer.updateAppState(
           {
@@ -171,8 +185,8 @@ export default defineBackground(() => {
             currentSummary,
             stats: {
               ...state.stats,
-              turns,
-              avgTokensPerTurn: estimate.totalTokens / turns,
+              turns: finalTurns,
+              avgTokensPerTurn: estimate.totalTokens / finalTurns,
               healthMetrics: degradationEngine.toLegacyMetrics(healthScore),
             },
           },

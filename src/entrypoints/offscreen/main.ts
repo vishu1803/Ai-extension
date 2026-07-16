@@ -11,11 +11,11 @@ function getEngine(platformId: string, maxContext: number): TokenEngine {
   return tokenEngines[platformId];
 }
 
-browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
+browser.runtime.onMessage.addListener(((message: ExtensionMessage, sender: any, sendResponse: any) => {
   if (message.type === 'TOKENIZE_REQUEST') {
     const { platformId, maxContext, messages } = message.payload;
     const engine = getEngine(platformId, maxContext);
     engine.estimateConversation(messages).then(sendResponse).catch(console.error);
     return true; // Keep the message channel open for the async response
   }
-});
+}) as any);

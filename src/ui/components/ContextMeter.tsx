@@ -21,8 +21,8 @@ export function ContextMeter({ value, variant, status }: ContextMeterProps) {
   const [colorStart, colorEnd] = strokeColors[status] || strokeColors.healthy;
 
   if (variant === 'circular' || variant === 'mini') {
-    const size = variant === 'circular' ? 140 : 60;
-    const strokeWidth = variant === 'circular' ? 8 : 4;
+    const size = variant === 'circular' ? 140 : 72;
+    const strokeWidth = variant === 'circular' ? 8 : 6;
     const radius = (size - strokeWidth) / 2;
     const circumference = radius * 2 * Math.PI;
     const offset = circumference - (fill / 100) * circumference;
@@ -37,7 +37,7 @@ export function ContextMeter({ value, variant, status }: ContextMeterProps) {
         aria-valuemin={0}
         aria-valuemax={100}
       >
-        <svg width={size} height={size} className="transform -rotate-90">
+        <svg width={size} height={size} className="transform -rotate-90 filter drop-shadow-md">
           <defs>
             <linearGradient id={gradientId} x1="0%" y1="0%" x2="100%" y2="100%">
               <stop offset="0%" stopColor={colorStart} />
@@ -49,7 +49,7 @@ export function ContextMeter({ value, variant, status }: ContextMeterProps) {
             cy={size / 2}
             r={radius}
             fill="transparent"
-            stroke="var(--border-subtle, rgba(255,255,255,0.08))"
+            stroke="var(--border-subtle, rgba(255,255,255,0.12))"
             strokeWidth={strokeWidth}
           />
           <circle
