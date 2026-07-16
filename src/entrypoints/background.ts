@@ -6,8 +6,8 @@ import { ExtensionMessage } from '../messaging/types';
 // TokenEngine is now offloaded to offscreen document
 import { SummaryEngine } from '../engines/summary';
 import { PlatformId } from '../shared/types';
-import { ChatMessage } from '../adapters/engineTypes';
 import { DegradationEngine } from '../engines/degradation';
+import { conversationManager } from '../core/ConversationManager';
 
 let creatingOffscreen: Promise<void> | null = null;
 
@@ -35,8 +35,6 @@ async function hasDocument() {
 // Global cache for summary engines to enable incremental updates
 const summaryEngines: Record<string, SummaryEngine> = {};
 
-// Global cache for current session messages (used for regeneration)
-const sessionMessages: Record<string, ChatMessage[]> = {};
 const degradationEngine = new DegradationEngine();
 
 interface SidePanelBrowser {
@@ -111,66 +109,69 @@ export default defineBackground(() => {
       }
 
       case 'CONTENT_MUTATION': {
-        const { messages, platform } = message.payload;
-        console.log(`[Context] Received CONTENT_MUTATION with ${messages.length} messages for platform: ${platform}`);
+        const observation = message.payload;
+        console.log(`[Context] Received DOM_OBSERVATION with ${observation.messages.length} messages for platform: ${observation.platform}`);
 
-        // Cache the current session messages for regeneration
-        sessionMessages[platform] = messages;
-        console.log(`[Storage] Session cached for ${platform}. (Checks: Context survives page refresh if intended)`);
+        // 1. Let the ConversationManager perform the canonical merge
+        const conversation = await conversationManager.processMutation(observation);
+
+        // 2. Map back to array for downstream engines
+        const fullMessages = conversation.orderedMessageIds.map(id => conversation.messages[id]);
 
         const tabId =
           typeof sender === 'object' && sender !== null && 'tab' in sender
             ? (sender as { tab?: { id?: number } }).tab?.id
             : undefined;
 
-        // 1. Get current state to read thresholds and context limit
+        // 3. Get current state to read thresholds and context limit
         const state = await storageLayer.appState.getValue(tabId);
         const limit = state.stats.contextLimit;
 
-        // 2. Ensure Offscreen Document exists and send Tokenize Request
+        // 4. Ensure Offscreen Document exists and send Tokenize Request
+        // (We do this even while streaming to keep token count live)
         await setupOffscreenDocument('/offscreen.html');
 
         let estimate: { totalTokens: number; totalInputTokens: number; totalOutputTokens: number; confidence: number };
         try {
-          console.log(`[LLM] Requesting tokenization offscreen for ${messages.length} messages.`);
+          console.log(`[LLM] Requesting tokenization offscreen for ${fullMessages.length} messages.`);
           estimate = await browser.runtime.sendMessage({
             type: 'TOKENIZE_REQUEST',
             payload: {
-              platformId: platform,
+              platformId: observation.platform,
               maxContext: limit,
-              messages,
+              messages: fullMessages,
             },
           }) as typeof estimate;
-          console.log(`[LLM] Received token estimate: ${estimate.totalTokens} tokens (Confidence: ${estimate.confidence})`);
         } catch (err) {
           console.error('[LLM] Tokenization failed:', err);
           estimate = { totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, confidence: 0 };
         }
-        // 3. Run Summary Engine (Incremental)
-        const turns = messages.filter((m) => m.role === 'user').length || 1;
-        const autoSummaryThreshold = 3; // Typically user setting, hardcoded for checks
 
-        console.log(`[Summary] Triggering incremental summary engine for ${platform}. User Turns: ${turns}`);
-        if (turns >= autoSummaryThreshold) {
-           console.log(`[Summary] Turns (${turns}) >= threshold (${autoSummaryThreshold}). (Checks: Summaries are generated after the configured threshold)`);
+        // 5. Run Summary Engine
+        // Optimization: Only run summary if NOT streaming, to save CPU and LLM costs
+        let currentSummary = state.currentSummary;
+        const turns = fullMessages.filter((m) => m.role === 'user').length || 1;
+        const autoSummaryThreshold = 3;
+
+        if (!observation.isStreaming) {
+          if (turns >= autoSummaryThreshold) {
+            console.log(`[Summary] Triggering summary engine for ${observation.platform}. Turns: ${turns}`);
+            const summaryEngine = getSummaryEngine(observation.platform);
+            currentSummary = summaryEngine.processIncremental(fullMessages);
+          }
         } else {
-           console.log(`[Summary] Turns (${turns}) < threshold (${autoSummaryThreshold}). Collecting context...`);
+          console.log(`[Summary] Skipped summary generation (isStreaming = true)`);
         }
 
-        const summaryEngine = getSummaryEngine(platform);
-        const currentSummary = summaryEngine.processIncremental(messages);
-
-        // 4. Calculate live health from actual extracted messages
+        // 6. Calculate live health from full conversation history
         const healthScore = degradationEngine.evaluate({
-          messages,
+          messages: fullMessages,
           totalTokens: estimate.totalTokens,
           contextLimit: limit,
           thresholds: state.thresholds,
         });
 
-        // 5. Update the centralized state
-        const finalTurns = messages.filter((m) => m.role === 'user').length || 1;
-
+        // 7. Update the centralized Derived State (AppState)
         await storageLayer.updateAppState(
           {
             tokenEstimate: {
@@ -178,15 +179,15 @@ export default defineBackground(() => {
               inputCount: estimate.totalInputTokens,
               outputCount: estimate.totalOutputTokens,
               confidence: estimate.confidence,
-              isStreaming: false,
+              isStreaming: observation.isStreaming,
             },
-            platform,
+            platform: observation.platform,
             status: healthScore.status,
             currentSummary,
             stats: {
               ...state.stats,
-              turns: finalTurns,
-              avgTokensPerTurn: estimate.totalTokens / finalTurns,
+              turns,
+              avgTokensPerTurn: estimate.totalTokens / turns,
               healthMetrics: degradationEngine.toLegacyMetrics(healthScore),
             },
           },
@@ -224,26 +225,12 @@ export default defineBackground(() => {
           typeof sender === 'object' && sender !== null && 'tab' in sender
             ? (sender as { tab?: { id?: number } }).tab?.id
             : undefined;
-        // Find the current platform's cached messages and force a full regeneration
-        const state = await storageLayer.appState.getValue(tabId);
-        const platform: PlatformId = state.platform || 'chatgpt';
-        const messages = sessionMessages[platform];
-
-        if (messages && messages.length > 0) {
-          const summaryEngine = getSummaryEngine(platform);
-          const freshSummary = summaryEngine.regenerate(messages);
-
-          await storageLayer.updateAppState(
-            {
-              currentSummary: freshSummary,
-            },
-            tabId
-          );
-
-          return { success: true };
-        }
-
-        return { success: false, error: 'No session messages to regenerate from' };
+            
+        // We can't synchronously resolve the URL from here without querying the tab, 
+        // but typically REGENERATE_SUMMARY is fired when the UI is open. 
+        // In a full implementation we'd pass conversationId from the UI.
+        console.warn('REGENERATE_SUMMARY requires conversationId in new architecture.');
+        return { success: false, error: 'Not fully implemented in redesign' };
       }
 
       case 'OPEN_SIDE_PANEL': {

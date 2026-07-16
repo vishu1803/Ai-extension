@@ -43,25 +43,18 @@ export default defineContentScript({
 
       console.log(`[Startup] Detected Platform: ${adapter.name}. Initializing engine.`);
 
-      // Initialize Robust DOM Engine
+      // Initialize Robust DOM Engine (Stateless telemetry observer)
       const engine = new RobustDOMEngine(
-        () => adapter.extractMessages(),
-        (fullText) => {
-          console.log(
-            `[Extractor] Conversation updated for ${adapter.name}. Full text length: ${fullText.length} characters.`
-          );
+        adapter,
+        (observation) => {
+          console.log(`[Observer] Emitting ${observation.messages.length} visible messages for ${observation.platform}`);
 
-          // Send all extracted messages to Token Engine via background service worker
-          const messages = adapter.extractMessages();
+          // Send the raw DOM observation to Background Service Worker (the source of truth)
           messaging.sendToBackground({
             type: 'CONTENT_MUTATION',
-            payload: {
-              messages,
-              platform: adapter.id,
-            },
+            payload: observation,
           });
-        },
-        adapter.observeSelector
+        }
       );
 
       engine.start();

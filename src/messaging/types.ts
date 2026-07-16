@@ -1,4 +1,4 @@
-import { ChatMessage } from '../adapters/engineTypes';
+import { ChatMessage, DOMObservation } from '../core/models';
 import { PlatformId } from '../shared/types';
 
 export type MessageType =
@@ -33,10 +33,7 @@ export interface UpdateTokenCountMessage extends BaseMessage {
 
 export interface ContentMutationMessage extends BaseMessage {
   type: 'CONTENT_MUTATION';
-  payload: {
-    messages: ChatMessage[];
-    platform: PlatformId;
-  };
+  payload: DOMObservation;
 }
 
 export interface OpenSidePanelMessage extends BaseMessage {

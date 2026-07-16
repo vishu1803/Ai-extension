@@ -1,60 +1,70 @@
-import { ChatMessage, ConversationState } from './engineTypes';
+import { DOMObservation } from '../core/models';
+import { PlatformAdapter } from './types';
+
+function hashMessages(messages: any[]): string {
+  let str = '';
+  for (const m of messages) {
+    str += m.id + m.text.length + m.text.slice(0, 50);
+  }
+  return str;
+}
 
 export class RobustDOMEngine {
   private observer: MutationObserver | null = null;
-  private currentConversation: ConversationState | null = null;
-  private extractFn: () => ChatMessage[];
-  private onUpdate: (fullText: string) => void;
-  private observeSelector?: string;
-  private lastUrl: string = '';
+  private adapter: PlatformAdapter;
+  private onObservation: (obs: DOMObservation) => void;
+  private lastHash: string = '';
+  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private isChecking: boolean = false;
 
   constructor(
-    extractFn: () => ChatMessage[],
-    onUpdate: (fullText: string) => void,
-    observeSelector?: string
+    adapter: PlatformAdapter,
+    onObservation: (obs: DOMObservation) => void
   ) {
-    this.extractFn = extractFn;
-    this.onUpdate = onUpdate;
-    this.observeSelector = observeSelector;
-    this.lastUrl = location.href;
+    this.adapter = adapter;
+    this.onObservation = onObservation;
   }
 
   public start() {
-    console.log('[Engine] start() called. Initializing conversation state.');
-    this.resetConversation();
+    console.log(`[Engine] Stateless telemetry observer started for ${this.adapter.id}.`);
 
-    // 1. Efficient Mutation Observer (debounced to minimize CPU)
+    if (this.adapter.id === 'chatgpt') {
+      console.warn(`[Engine] DIAGNOSTIC MODE: Bypassing MutationObserver. Running pure DOM scan every 2 seconds.`);
+      setInterval(() => {
+        console.group(`[Diagnostic Audit] Polling at ${new Date().toISOString()}`);
+        console.log(`Current URL: ${window.location.href}`);
+        console.log(`Conversation ID: ${this.adapter.getThreadId ? this.adapter.getThreadId() : 'unknown'}`);
+        this.adapter.extractMessages();
+        console.groupEnd();
+      }, 2000);
+      return; // Do NOT start MutationObserver. Do NOT emit observations.
+    }
+
     this.observer = new MutationObserver(() => {
-      // Don't log here, it triggers too often. Log in processDOM instead.
       this.scheduleUpdate();
     });
 
     const startObserver = () => {
       const target = this.getObservationTarget();
       if (target) {
-        console.log(`[Observer] Attach Success: target = ${target.tagName || 'Document'}. (Checks: MutationObserver attaches successfully, No duplicate observers)`);
         this.observer?.observe(target, {
           childList: true,
           subtree: true,
           characterData: true,
         });
+        console.log(`[Observer] Attached to ${target.tagName || 'Document'}`);
       } else {
-        console.log('[Observer] Target not found yet, retrying in 50ms...');
         setTimeout(startObserver, 50);
       }
     };
     startObserver();
 
-    // 2. SPA URL change detection for new conversations
-    this.setupUrlListener();
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
-
-    // Initial trigger
+    this.setupUrlListener();
     this.scheduleUpdate();
   }
 
   public stop() {
-    console.log('[Engine] stop() called. Cleaning up listeners and observers. (Checks: No memory leaks, No duplicate listeners)');
     if (this.observer) {
       this.observer.disconnect();
       this.observer = null;
@@ -67,8 +77,8 @@ export class RobustDOMEngine {
   }
 
   private getObservationTarget(): Element | null {
-    if (this.observeSelector) {
-      const target = document.querySelector(this.observeSelector);
+    if (this.adapter.observeSelector) {
+      const target = document.querySelector(this.adapter.observeSelector);
       if (target) return target;
     }
     return (
@@ -79,8 +89,23 @@ export class RobustDOMEngine {
     );
   }
 
+  private handleVisibilityChange = () => {
+    if (document.visibilityState === 'hidden') {
+      this.observer?.disconnect();
+    } else {
+      const target = this.getObservationTarget();
+      if (target) {
+        this.observer?.observe(target, {
+          childList: true,
+          subtree: true,
+          characterData: true,
+        });
+        this.scheduleUpdate();
+      }
+    }
+  };
+
   private setupUrlListener() {
-    // Intercept History API to detect SPA navigation
     const originalPushState = history.pushState;
     const originalReplaceState = history.replaceState;
 
@@ -95,48 +120,16 @@ export class RobustDOMEngine {
     window.addEventListener('popstate', () => window.dispatchEvent(new Event('locationchange')));
 
     window.addEventListener('locationchange', () => {
-      if (this.lastUrl !== location.href) {
-        console.log(`[Engine] Page navigation detected (SPA). URL changed from ${this.lastUrl} to ${location.href}. (Checks: Page navigation is handled)`);
-        this.lastUrl = location.href;
-        this.resetConversation();
-        this.scheduleUpdate();
-      }
+      // Always trigger an immediate check on navigation
+      this.lastHash = '';
+      this.scheduleUpdate();
     });
   }
-
-  private resetConversation() {
-    console.log('[Engine] Resetting conversation context. (Checks: Old context is pruned correctly on navigation)');
-    this.currentConversation = {
-      id: location.pathname,
-      messages: new Map(),
-      orderedIds: [],
-    };
-  }
-
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-  private handleVisibilityChange = () => {
-    if (document.visibilityState === 'hidden') {
-      this.observer?.disconnect();
-      return;
-    }
-
-    const target = this.getObservationTarget();
-    if (target) {
-      this.observer?.observe(target, {
-        childList: true,
-        subtree: true,
-        characterData: true,
-      });
-      this.scheduleUpdate();
-    }
-  };
 
   private scheduleUpdate() {
     if (document.visibilityState === 'hidden') return;
     if (this.debounceTimer) return;
 
-    // Use a 250ms debounce to drastically reduce CPU usage during fast streaming
     this.debounceTimer = setTimeout(() => {
       this.processDOM();
       this.debounceTimer = null;
@@ -144,56 +137,50 @@ export class RobustDOMEngine {
   }
 
   private processDOM() {
-    if (!this.currentConversation) return;
+    if (this.isChecking) return;
+    this.isChecking = true;
 
-    const visibleMessages = this.extractFn();
-    let hasChanges = false;
-    let newMessagesCount = 0;
-    let editedMessagesCount = 0;
+    try {
+      const visibleMessages = this.adapter.extractMessages();
+      const currentHash = hashMessages(visibleMessages);
+      
+      const isStreaming = this.adapter.isStreaming ? this.adapter.isStreaming() : false;
 
-    // Handle Lazy Loading & Edits:
-    // If a message ID exists in the DOM, we update our state.
-    // If it doesn't exist in the DOM but exists in our state, we KEEP it (assume lazy loaded off-screen)
-    // UNLESS the DOM indicates a clear/delete (handled by resetConversation on URL change).
+      // Deep logging for diagnostic phase
+      const userMessages = visibleMessages.filter(m => m.role === 'user').length;
+      const assistantMessages = visibleMessages.filter(m => m.role === 'ai').length;
+      console.log(
+        `[Engine] CONTENT_MUTATION Event Details:\n` +
+        ` URL: ${window.location.href}\n` +
+        ` DOM Message Count (total in DOM handled by adapter): unknown\n` + 
+        ` Extracted message count: ${visibleMessages.length}\n` +
+        ` Visible user messages: ${userMessages}\n` +
+        ` Visible assistant messages: ${assistantMessages}\n` +
+        ` Streaming: ${isStreaming}`
+      );
 
-    // To handle regenerations/edits properly, we update the text of existing IDs.
-    for (const msg of visibleMessages) {
-      const existing = this.currentConversation.messages.get(msg.id);
+      // If streaming, the hash changes constantly.
+      // If not streaming, only emit if hash changed.
+      if (currentHash !== this.lastHash || isStreaming) {
+        this.lastHash = currentHash;
+        
+        const observation: DOMObservation = {
+          platform: this.adapter.id,
+          threadId: this.adapter.getThreadId ? this.adapter.getThreadId() : null,
+          url: window.location.href,
+          pageTitle: document.title,
+          messages: visibleMessages,
+          isStreaming: isStreaming
+        };
 
-      if (!existing) {
-        // New message
-        console.log(`[Extractor] New ${msg.role} message detected: ID=${msg.id}, Length=${msg.text.length} (Checks: New messages detected, Deduplication)`);
-        this.currentConversation.messages.set(msg.id, msg);
-        this.currentConversation.orderedIds.push(msg.id);
-        hasChanges = true;
-        newMessagesCount++;
-      } else if (existing.text !== msg.text) {
-        // Edit / Streaming / Regeneration
-        const diff = msg.text.length - existing.text.length;
-        console.log(`[Extractor] Streaming response captured for ${msg.role}: ID=${msg.id}, +${diff} chars. (Checks: Streaming captured)`);
-        existing.text = msg.text;
-        hasChanges = true;
-        editedMessagesCount++;
+        this.onObservation(observation);
+      } else {
+        console.log(`[Engine] Ignored mutation: Hash identical to last extraction (${this.lastHash})`);
       }
+    } catch (err) {
+      console.error('[Engine] Extraction error:', err);
+    } finally {
+      this.isChecking = false;
     }
-
-    if (hasChanges) {
-      console.log(`[Observer] Processed DOM. Found ${newMessagesCount} new, ${editedMessagesCount} streaming/edited messages. Triggering update.`);
-      this.emitUpdate();
-    } else {
-      console.log(`[Observer] Extracted ${visibleMessages.length} messages but found 0 changes. (Checks: Messages are not duplicated)`);
-    }
-  }
-
-  private emitUpdate() {
-    if (!this.currentConversation) return;
-
-    // Construct the full conversation string from state
-    const fullText = this.currentConversation.orderedIds
-      .map((id) => this.currentConversation!.messages.get(id)?.text)
-      .filter(Boolean)
-      .join('\n\n');
-
-    this.onUpdate(fullText);
   }
 }

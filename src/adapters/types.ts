@@ -1,4 +1,4 @@
-import { ChatMessage } from './engineTypes';
+import { ChatMessage } from '../core/models';
 import { PlatformId } from '../shared/types';
 
 export interface PlatformAdapter {
@@ -19,9 +19,20 @@ export interface PlatformAdapter {
 
   /**
    * Extracts all currently visible messages from the DOM.
-   * The RobustDOMEngine will call this during mutations and handle state/lazy-loading.
+   * The DOM engine will call this during mutations and emit the raw array.
    */
   extractMessages(): ChatMessage[];
+
+  /**
+   * Attempts to resolve the canonical Thread ID for this platform (e.g., from a <meta> tag or URL).
+   * If unable (e.g. at a temporary root URL), returns null.
+   */
+  getThreadId?(): string | null;
+
+  /**
+   * Returns true if the UI currently indicates an AI response is streaming.
+   */
+  isStreaming?(): boolean;
 
   /**
    * Optional CSS selector to scope the MutationObserver to, reducing CPU usage.

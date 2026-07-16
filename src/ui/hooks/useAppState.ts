@@ -68,8 +68,8 @@ export const useAppState = create<AppStore>((set, get) => ({
         }
         
         const currentSummary = get().currentSummary;
-        if (newState.currentSummary && newState.currentSummary.id !== currentSummary?.id) {
-          console.log(`[SidePanel] Summary updated (New ID: ${newState.currentSummary.id})`);
+        if (newState.currentSummary && currentSummary && newState.currentSummary.lastUpdatedAt !== currentSummary.lastUpdatedAt) {
+          console.log(`[SidePanel] Summary updated.`);
         }
 
         console.log(`[UI] State updated via storage sync. Tokens: ${newState.tokenEstimate.count}, Status: ${newState.status}`);
