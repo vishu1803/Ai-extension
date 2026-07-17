@@ -1,5 +1,8 @@
 import { DOMObservation } from '../core/models';
 import { PlatformAdapter } from './types';
+import { ConversationAcquirer } from '../core/acquisition/ConversationAcquirer';
+import { VisibleDOMStrategy } from '../core/acquisition/strategies/VisibleDOMStrategy';
+import { HydrationStrategy } from '../core/acquisition/strategies/HydrationStrategy';
 
 function hashMessages(messages: any[]): string {
   let str = '';
@@ -9,6 +12,8 @@ function hashMessages(messages: any[]): string {
   return str;
 }
 
+import { runForensicInvestigation } from './chatgpt';
+
 export class RobustDOMEngine {
   private observer: MutationObserver | null = null;
   private adapter: PlatformAdapter;
@@ -16,6 +21,12 @@ export class RobustDOMEngine {
   private lastHash: string = '';
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private isChecking: boolean = false;
+  private acquirer: ConversationAcquirer;
+  
+  // Tracing State
+  private wasStreaming = false;
+  private lastUserMsgId = '';
+  private lastAssistantMsgId = '';
 
   constructor(
     adapter: PlatformAdapter,
@@ -23,25 +34,28 @@ export class RobustDOMEngine {
   ) {
     this.adapter = adapter;
     this.onObservation = onObservation;
+    
+    this.acquirer = new ConversationAcquirer([
+      new HydrationStrategy(adapter),
+      new VisibleDOMStrategy(adapter)
+    ]);
+    
+    if (!this.acquirer) {
+      throw new Error('[Engine Fatal] Dependency injection failed: ConversationAcquirer is undefined.');
+    }
+    
+    console.log(`[Engine] ConversationAcquirer created`);
+    console.log(`[Engine] Registered strategies: Hydration, VisibleDOM`);
+    console.log(`[Engine] RobustDOMEngine created`);
+    console.log(`[Engine] Acquisition dependency injected: true`);
   }
 
   public start() {
     console.log(`[Engine] Stateless telemetry observer started for ${this.adapter.id}.`);
 
-    if (this.adapter.id === 'chatgpt') {
-      console.warn(`[Engine] DIAGNOSTIC MODE: Bypassing MutationObserver. Running pure DOM scan every 2 seconds.`);
-      setInterval(() => {
-        console.group(`[Diagnostic Audit] Polling at ${new Date().toISOString()}`);
-        console.log(`Current URL: ${window.location.href}`);
-        console.log(`Conversation ID: ${this.adapter.getThreadId ? this.adapter.getThreadId() : 'unknown'}`);
-        this.adapter.extractMessages();
-        console.groupEnd();
-      }, 2000);
-      return; // Do NOT start MutationObserver. Do NOT emit observations.
-    }
-
-    this.observer = new MutationObserver(() => {
-      this.scheduleUpdate();
+    // Removed the hardcoded diagnostic bypass because it's now properly encapsulated
+    this.observer = new MutationObserver((mutations) => {
+      this.scheduleUpdate('MutationObserver');
     });
 
     const startObserver = () => {
@@ -126,58 +140,107 @@ export class RobustDOMEngine {
     });
   }
 
-  private scheduleUpdate() {
+  private scheduleUpdate(reason: string = 'Unknown') {
     if (document.visibilityState === 'hidden') return;
-    if (this.debounceTimer) return;
+    if (this.debounceTimer) {
+      console.log(`[Engine] Skip Emission: debounce active`);
+      return;
+    }
 
     this.debounceTimer = setTimeout(() => {
-      this.processDOM();
+      this.processDOM(reason);
       this.debounceTimer = null;
     }, 250);
   }
 
-  private processDOM() {
-    if (this.isChecking) return;
+  private async processDOM(reason: string = 'Unknown') {
+    const timestamp = new Date().toISOString();
+    console.log(`\n--- processDOM Executed ---`);
+    console.log(`Timestamp: ${timestamp}`);
+    console.log(`Mutation reason: ${reason}`);
+    
+    if (this.isChecking) {
+      console.log(`[Engine] Skip Emission: extraction error / isChecking lock active`);
+      return;
+    }
+    
     this.isChecking = true;
 
     try {
-      const visibleMessages = this.adapter.extractMessages();
+      const threadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
+      const result = await this.acquirer.acquire(threadId || 'unknown', this.adapter.id);
+      const visibleMessages = result.messages;
       const currentHash = hashMessages(visibleMessages);
       
       const isStreaming = this.adapter.isStreaming ? this.adapter.isStreaming() : false;
+      
+      console.log(`Current DOM message count: ${visibleMessages.length}`);
+      
+      if (visibleMessages.length === 0) {
+        console.log(`[Engine] Skip Emission: no messages`);
+        this.isChecking = false;
+        return;
+      }
+      
+      const lastMsg = visibleMessages[visibleMessages.length - 1];
+      console.log(`Last visible message ID: ${lastMsg.id}`);
+      console.log(`Last visible message role: ${lastMsg.role}`);
+      console.log(`Last visible message first 100 chars: ${lastMsg.text.substring(0, 100).replace(/\n/g, ' ')}`);
+      console.log(`Current extraction hash: ${currentHash}`);
+      console.log(`Previous extraction hash: ${this.lastHash}`);
 
-      // Deep logging for diagnostic phase
-      const userMessages = visibleMessages.filter(m => m.role === 'user').length;
-      const assistantMessages = visibleMessages.filter(m => m.role === 'ai').length;
-      console.log(
-        `[Engine] CONTENT_MUTATION Event Details:\n` +
-        ` URL: ${window.location.href}\n` +
-        ` DOM Message Count (total in DOM handled by adapter): unknown\n` + 
-        ` Extracted message count: ${visibleMessages.length}\n` +
-        ` Visible user messages: ${userMessages}\n` +
-        ` Visible assistant messages: ${assistantMessages}\n` +
-        ` Streaming: ${isStreaming}`
-      );
+      // Streaming Tracing Logic
+      if (lastMsg.role === 'user' && lastMsg.id !== this.lastUserMsgId) {
+        console.log(`[Trace] NEW USER PROMPT SUBMITTED: First appeared in DOM (ID: ${lastMsg.id})`);
+        this.lastUserMsgId = lastMsg.id;
+      }
+      
+      if (lastMsg.role === 'ai' && lastMsg.id !== this.lastAssistantMsgId) {
+        console.log(`[Trace] ASSISTANT PLACEHOLDER APPEARED (ID: ${lastMsg.id})`);
+        this.lastAssistantMsgId = lastMsg.id;
+      }
+      
+      if (isStreaming && !this.wasStreaming) {
+        console.log(`[Trace] STREAMING BEGINS`);
+        this.wasStreaming = true;
+      } else if (!isStreaming && this.wasStreaming) {
+        console.log(`[Trace] STREAMING ENDS`);
+        this.wasStreaming = false;
+      }
 
-      // If streaming, the hash changes constantly.
-      // If not streaming, only emit if hash changed.
-      if (currentHash !== this.lastHash || isStreaming) {
+      let willEmit = false;
+      if (isStreaming) {
+        willEmit = true;
+      } else if (currentHash !== this.lastHash) {
+        willEmit = true;
+      }
+      
+      console.log(`Whether emission occurred: ${willEmit ? 'YES' : 'NO'}`);
+
+      if (willEmit) {
         this.lastHash = currentHash;
         
         const observation: DOMObservation = {
           platform: this.adapter.id,
-          threadId: this.adapter.getThreadId ? this.adapter.getThreadId() : null,
+          threadId,
           url: window.location.href,
           pageTitle: document.title,
           messages: visibleMessages,
           isStreaming: isStreaming
         };
 
+        if (!isStreaming && !this.wasStreaming) {
+          console.log(`[Trace] FINAL CONTENT_MUTATION EMITTED (Streaming Complete / Steady State)`);
+        }
+
         this.onObservation(observation);
       } else {
-        console.log(`[Engine] Ignored mutation: Hash identical to last extraction (${this.lastHash})`);
+        if (!isStreaming && currentHash === this.lastHash) {
+          console.log(`[Engine] Skip Emission: identical hash`);
+        }
       }
     } catch (err) {
+      console.log(`[Engine] Skip Emission: extraction error`);
       console.error('[Engine] Extraction error:', err);
     } finally {
       this.isChecking = false;

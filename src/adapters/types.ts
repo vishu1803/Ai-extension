@@ -18,8 +18,19 @@ export interface PlatformAdapter {
   matches(url: URL): boolean;
 
   /**
-   * Extracts all currently visible messages from the DOM.
-   * The DOM engine will call this during mutations and emit the raw array.
+   * Defines the CSS selectors used by the VisibleDOMStrategy to extract messages.
+   * Required for platforms using the DOM acquisition strategy.
+   */
+  domSelectors?: string[];
+
+  /**
+   * Extracts historical conversation state from embedded page data (e.g. Next.js __NEXT_DATA__).
+   * Returns a promise resolving to an array of ChatMessages, or null if no data found.
+   */
+  extractHydrationData?(): Promise<ChatMessage[] | null>;
+
+  /**
+   * @deprecated Handled by History Acquisition Layer strategies.
    */
   extractMessages(): ChatMessage[];
 

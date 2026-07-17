@@ -24,6 +24,83 @@ export const chatGptAdapter: PlatformAdapter = {
     return match ? match[1] : null;
   },
 
+  domSelectors: [
+    '[data-message-author-role]',
+    'article',
+    'div[class*="conversation-turn"]',
+    '.prose, .whitespace-pre-wrap'
+  ],
+
+  async extractHydrationData(): Promise<ChatMessage[] | null> {
+    try {
+      const scripts = Array.from(document.querySelectorAll('script'));
+      let conversationData = null;
+      
+      for (const script of scripts) {
+        if (!script.textContent) continue;
+        
+        // 1. Next.js Legacy
+        if (script.id === '__NEXT_DATA__') {
+          try {
+            const data = JSON.parse(script.textContent);
+            conversationData = data?.props?.pageProps?.serverResponse?.mapping || data?.props?.pageProps?.initialState?.serverState?.mapping;
+          } catch (e) {}
+        }
+        
+        // 2. Remix Current (Usually encoded in window.__remixContext or similar)
+        if (script.textContent.includes('__remixContext') || script.textContent.includes('"mapping":')) {
+           try {
+             const jsonMatch = script.textContent.match(/(\{.*\})/);
+             if (jsonMatch) {
+                const data = JSON.parse(jsonMatch[1]);
+                if (data.mapping) {
+                  conversationData = data.mapping;
+                } else if (data?.state?.loaderData) {
+                  const routes = Object.values(data.state.loaderData);
+                  for (const route of routes) {
+                    if ((route as any)?.serverResponse?.mapping) {
+                       conversationData = (route as any).serverResponse.mapping;
+                       break;
+                    }
+                  }
+                }
+             }
+           } catch(e) {}
+        }
+        
+        if (conversationData) break;
+      }
+      
+      if (!conversationData) return null;
+      
+      const messages: ChatMessage[] = [];
+      
+      // ChatGPT mapping is an object: { "node_id": { message: { ... } } }
+      Object.values(conversationData).forEach((node: any) => {
+         const msg = node?.message;
+         if (!msg || !msg.content || !msg.content.parts) return;
+         
+         const role = msg.author?.role === 'user' ? 'user' : 'ai';
+         const text = msg.content.parts.join('\n');
+         const id = msg.id;
+         const timestamp = msg.create_time || 0;
+         
+         if (text && text.length > 0) {
+           messages.push({ id, role, text, timestamp });
+         }
+      });
+      
+      // Sort chronologically by create_time
+      messages.sort((a: any, b: any) => (a.timestamp || 0) - (b.timestamp || 0));
+      
+      console.log(`[ChatGPT Adapter] Successfully extracted ${messages.length} messages from Hydration Data.`);
+      return messages.length > 0 ? messages : null;
+    } catch (err) {
+      console.warn('[ChatGPT Adapter] Hydration parsing failed:', err);
+      return null;
+    }
+  },
+
   isStreaming() {
     // Look for the "Stop generating" button or the blinking cursor
     const stopButton = document.querySelector('button[aria-label="Stop generating"]');
@@ -32,116 +109,86 @@ export const chatGptAdapter: PlatformAdapter = {
   },
 
   extractMessages(): ChatMessage[] {
-    const messages: ChatMessage[] = [];
-    
-    console.group(`[ChatGPT Adapter Audit] extractMessages() triggered`);
-    console.log(`[Audit] Scanning DOM. Shadow DOM is NOT penetrated. We query the main document.`);
-    
-    const selectors = [
-      '[data-message-author-role]',
-      'article',
-      'div[class*="conversation-turn"]',
-      '.prose, .whitespace-pre-wrap'
-    ];
-    
-    console.log(`[Audit] Selectors evaluated in order:`, selectors);
-
-    let elements: Element[] = [];
-    let fallbackLevel = '';
-
-    for (const selector of selectors) {
-      const matches = Array.from(document.querySelectorAll(selector));
-      console.log(`[Audit] Selector "${selector}" matching node count: ${matches.length}`);
-      if (matches.length > 0 && elements.length === 0) {
-        elements = matches;
-        fallbackLevel = selector;
-      }
-    }
-    
-    // Filter prose if we used the prose fallback
-    let isProseFallback = false;
-    if (fallbackLevel === '.prose, .whitespace-pre-wrap') {
-      isProseFallback = true;
-      elements = elements.filter(el => {
-        const text = (el as HTMLElement).innerText || '';
-        return text.length > 5;
-      });
-    }
-
-    console.log(`[Audit] Total DOM nodes matching final selector '${fallbackLevel}': ${elements.length}`);
-    
-    // Note on virtualization
-    if (elements.length < 5) {
-      console.warn(`[Audit] EXPLANATION for missing messages: Found ${elements.length} nodes. ChatGPT likely heavily virtualized the DOM, entirely removing older elements from the document.querySelectorAll scope. Only the current viewport is physically present in the DOM.`);
-    }
-
-    let userCount = 0;
-    let assistantCount = 0;
-    let discardedCount = 0;
-    const discardReasons: Record<string, string> = {};
-
-    elements.forEach((el, index) => {
-      let role: MessageRole = 'ai';
-      
-      const roleAttr = el.getAttribute('data-message-author-role');
-      if (roleAttr === 'user') {
-        role = 'user';
-      } else if (roleAttr === 'assistant' || roleAttr === 'ai') {
-        role = 'ai';
-      } else {
-        const text = (el as HTMLElement).innerText || '';
-        const html = el.innerHTML || '';
-        
-        if (el.classList.contains('whitespace-pre-wrap') && !el.classList.contains('prose')) {
-          role = 'user';
-        } else if (text.startsWith('You\n') || html.includes('alt="User"')) {
-          role = 'user';
-        }
-      }
-
-      const text = (el as HTMLElement).innerText?.trim();
-      
-      // Discard checks
-      if (!text || text.length === 0) {
-        discardedCount++;
-        discardReasons[`Node ${index}`] = 'Text is completely empty or missing.';
-        return;
-      }
-      
-      if (isProseFallback && text.length <= 5) {
-        discardedCount++;
-        discardReasons[`Node ${index}`] = `Text length (${text.length}) <= 5 during prose fallback. Text: "${text}"`;
-        return;
-      }
-      
-      let id = el.getAttribute('data-message-id');
-      if (!id) {
-        id = el.getAttribute('data-tracker-id');
-        if (!id) {
-          id = `hash-${hashString((text || '') + role)}-${(text || '').length}`;
-          el.setAttribute('data-tracker-id', id);
-        }
-      }
-
-      if (role === 'user') userCount++;
-      if (role === 'ai') assistantCount++;
-
-      const snippet = text.replace(/\n/g, ' ').substring(0, 60);
-      console.log(`[Audit Extracted Node] Index: ${index} | ID: ${id} | Role: ${role} | Text: "${snippet}..."`);
-      
-      messages.push({ id, role, text });
-    });
-
-    console.log(`[Audit Summary] DOM nodes found: ${elements.length}`);
-    console.log(`[Audit Summary] Messages extracted: ${messages.length}`);
-    console.log(`[Audit Summary] Total User nodes: ${userCount}`);
-    console.log(`[Audit Summary] Total Assistant nodes: ${assistantCount}`);
-    console.log(`[Audit Summary] Messages discarded: ${discardedCount}`);
-    if (discardedCount > 0) {
-      console.table(discardReasons);
-    }
-    console.groupEnd();
-    
-    return messages;
-  },
+    // Deprecated. Handled by VisibleDOMStrategy.
+    return [];
+  }
 };
+
+export function runForensicInvestigation() {
+  try {
+    console.log(`[Forensic] Step 6: console.group about to execute`);
+    console.group(`[Forensic Investigation] Searching for Hydration Data...`);
+    
+    const scripts = Array.from(document.querySelectorAll('script'));
+    
+    console.log(`Total <script> tags found: ${scripts.length}`);
+    
+    let hasNextData = false;
+    let hasRemixContext = false;
+    let hasConversation = false;
+    let hasMapping = false;
+    let hasMessages = false;
+    let hasLoaderData = false;
+    let hasRoutes = false;
+
+    scripts.forEach((script, index) => {
+      const type = script.type || 'text/javascript (implicit)';
+      const content = script.textContent || '';
+      const size = content.length;
+      
+      const snippet = content.substring(0, 100).replace(/\s+/g, ' ');
+      
+      console.groupCollapsed(`Script [${index}] | Type: ${type} | Size: ${size} bytes`);
+      console.log(`Snippet: ${snippet}`);
+      
+      const c_conversation = content.includes('conversation');
+      const c_mapping = content.includes('mapping');
+      const c_messages = content.includes('messages');
+      const c_loaderData = content.includes('loaderData');
+      const c_routes = content.includes('routes');
+      
+      if (script.id === '__NEXT_DATA__') hasNextData = true;
+      if (content.includes('__remixContext')) hasRemixContext = true;
+      if (c_conversation) hasConversation = true;
+      if (c_mapping) hasMapping = true;
+      if (c_messages) hasMessages = true;
+      if (c_loaderData) hasLoaderData = true;
+      if (c_routes) hasRoutes = true;
+      
+      console.log('--- Keyword Search ---');
+      console.log(`__NEXT_DATA__: ${script.id === '__NEXT_DATA__'}`);
+      console.log(`__remixContext: ${content.includes('__remixContext')}`);
+      console.log(`conversation: ${c_conversation}`);
+      console.log(`mapping: ${c_mapping}`);
+      console.log(`messages: ${c_messages}`);
+      console.log(`loaderData: ${c_loaderData}`);
+      console.log(`routes: ${c_routes}`);
+      console.log('----------------------');
+      
+      console.log(`Rejected: Script ${index} does not contain an extractable complete conversation JSON tree.`);
+      console.groupEnd();
+    });
+    
+    console.group(`[Forensic Summary]`);
+    console.log(`1. __NEXT_DATA__ exists: ${hasNextData}`);
+    console.log(`2. __remixContext exists: ${hasRemixContext}`);
+    console.log(`3. window.__remixContext exists: ${typeof (window as any).__remixContext !== 'undefined'}`);
+    console.log(`4. window.__NEXT_DATA__ exists: ${typeof (window as any).__NEXT_DATA__ !== 'undefined'}`);
+    console.log(`5. Any script contains 'conversation': ${hasConversation}`);
+    console.log(`6. Any script contains 'mapping': ${hasMapping}`);
+    console.log(`7. Any script contains 'messages': ${hasMessages}`);
+    console.log(`8. Any script contains 'loaderData': ${hasLoaderData}`);
+    console.log(`9. Any script contains 'routes': ${hasRoutes}`);
+    
+    console.log(`\nCONCLUSION: Hydration is not a viable acquisition strategy.`);
+    console.log(`EVIDENCE: None of the candidate sources on the current page expose a parseable, complete conversation history. The theoretical Remix or Next.js payloads are either absent or deliberately stripped of historical messages.`);
+    
+    console.groupEnd();
+    console.groupEnd();
+    console.log(`[Forensic] Step 6: PASS`);
+  } catch (e) {
+    console.error(`[Forensic] Step 6: FAIL`, e);
+  } finally {
+    console.log(`[Forensic] Step 7: Investigation completed`);
+  }
+}
