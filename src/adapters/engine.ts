@@ -1,4 +1,4 @@
-import { DOMObservation } from '../core/models';
+import { ChatMessage, DOMObservation } from '../core/models';
 import { PlatformAdapter } from './types';
 import { ConversationAcquirer } from '../core/acquisition/ConversationAcquirer';
 import {
@@ -9,7 +9,11 @@ import { APIStrategy } from '../core/acquisition/strategies/APIStrategy';
 import { VisibleDOMStrategy } from '../core/acquisition/strategies/VisibleDOMStrategy';
 import { HydrationStrategy } from '../core/acquisition/strategies/HydrationStrategy';
 import { ConversationReadyDetector } from './ConversationReadyDetector';
-import { tagAllCandidateScrollContainers, inspectScrollContainer } from './utils';
+import {
+  tagAllCandidateScrollContainers,
+  inspectScrollContainer,
+  safeQuerySelectorAll,
+} from './utils';
 
 function hashMessages(messages: { id: string; text: string }[]): string {
   let str = '';
@@ -186,8 +190,7 @@ export class RobustDOMEngine {
   private scheduleUpdate(reason: string = 'Unknown') {
     if (document.visibilityState === 'hidden') return;
     if (this.debounceTimer) {
-      console.log(`[Engine] Skip Emission: debounce active`);
-      return;
+      clearTimeout(this.debounceTimer);
     }
 
     this.debounceTimer = setTimeout(() => {
@@ -302,8 +305,21 @@ boundingClientRect: ${JSON.stringify(fallback.getBoundingClientRect())}`);
           threadId = stored.conversationId;
         }
       }
-      const result = await this.acquirer.acquire(threadId || 'unknown', this.adapter.id);
-      const visibleMessages = result.messages;
+      let visibleMessages: ChatMessage[] = [];
+      let acquisitionStrategyUsed = 'DOM';
+
+      // Live observation: extract current live DOM messages using VisibleDOMStrategy
+      const domStrategy = new VisibleDOMStrategy(this.adapter);
+      const domResult = await domStrategy.execute(threadId || 'unknown');
+
+      if (domResult.success && domResult.messages.length > 0) {
+        visibleMessages = domResult.messages;
+        acquisitionStrategyUsed = 'DOM';
+      } else {
+        const result = await this.acquirer.acquire(threadId || 'unknown', this.adapter.id);
+        visibleMessages = result.messages;
+        acquisitionStrategyUsed = result.strategy;
+      }
 
       // Calculate actual message count in live ChatGPT DOM
       const selectors = this.adapter.domSelectors || [
@@ -313,7 +329,7 @@ boundingClientRect: ${JSON.stringify(fallback.getBoundingClientRect())}`);
       ];
       let querySelectorCount = 0;
       for (const sel of selectors) {
-        const matches = document.querySelectorAll(sel);
+        const matches = safeQuerySelectorAll(sel);
         if (matches.length > 0) {
           querySelectorCount = matches.length;
           break;
@@ -401,7 +417,7 @@ clientHeight: ${clientHeight}`);
           pageTitle: document.title,
           messages: visibleMessages,
           isStreaming: isStreaming,
-          source: result.strategy === 'NETWORK_INTERCEPT' ? 'NETWORK' : 'DOM',
+          source: acquisitionStrategyUsed === 'NETWORK_INTERCEPT' ? 'NETWORK' : 'DOM',
           scrollTop,
           scrollHeight,
           clientHeight,

@@ -22,7 +22,7 @@ export default defineConfig({
       extension_pages:
         process.env.NODE_ENV === 'development'
           ? "script-src 'self'; object-src 'self'; connect-src 'self' ws://localhost:3000 http://localhost:3000"
-          : "script-src 'self'; object-src 'self'; connect-src 'none'",
+          : "script-src 'self'; object-src 'self'; connect-src 'self'",
     },
   },
   srcDir: 'src',
