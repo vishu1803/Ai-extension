@@ -5,6 +5,7 @@ export type MessageRole = 'user' | 'ai' | 'system';
 
 export interface ChatMessage {
   id: string;
+  conversationId?: string;
   role: MessageRole;
   text: string;
   timestamp?: number;
@@ -53,10 +54,12 @@ export interface Conversation {
 export interface DOMObservation {
   platform: PlatformId;
   threadId: string | null; // Null if unable to resolve (e.g. temporary root URL)
+  conversationId?: string;
   url: string;
   pageTitle: string;
   messages: ChatMessage[];
   isStreaming: boolean;
+  model?: string;
   source?: 'NETWORK' | 'DOM';
   scrollTop?: number;
   scrollHeight?: number;

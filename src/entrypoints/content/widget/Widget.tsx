@@ -85,56 +85,6 @@ export function Widget() {
       ? (stats.contextLimit / 1000).toFixed(0) + 'K'
       : stats.contextLimit.toString();
 
-  useEffect(() => {
-    const onPointerMove = (e: PointerEvent) => {
-      if (!isDragging.current) return;
-
-      const dx = Math.abs(e.clientX - startPos.current.x);
-      const dy = Math.abs(e.clientY - startPos.current.y);
-      if (!hasMoved.current && dx < 5 && dy < 5) return;
-
-      hasMoved.current = true;
-      const newLeft = e.clientX - dragOffset.current.x;
-      const newTop = e.clientY - dragOffset.current.y;
-      
-      const height = isExpanded ? 240 : 44;
-      const width = isExpanded ? 260 : 160;
-      
-      const newBottom = window.innerHeight - (newTop + height);
-
-      const maxLeft = window.innerWidth - width;
-      const clampedLeft = Math.max(16, Math.min(newLeft, maxLeft - 16));
-      const clampedBottom = Math.max(16, Math.min(newBottom, window.innerHeight - height - 16));
-
-      if (widgetRef.current) {
-        widgetRef.current.style.left = `${clampedLeft}px`;
-        widgetRef.current.style.bottom = `${clampedBottom}px`;
-      }
-    };
-
-    const onPointerUp = () => {
-      if (!isDragging.current) return;
-      isDragging.current = false;
-      document.body.style.userSelect = '';
-
-      if (hasMoved.current && widgetRef.current) {
-        const rect = widgetRef.current.getBoundingClientRect();
-        const bottom = window.innerHeight - rect.bottom;
-        setWidgetPosition({ x: rect.left, y: bottom });
-      }
-    };
-
-    window.addEventListener('pointermove', onPointerMove);
-    window.addEventListener('pointerup', onPointerUp);
-    window.addEventListener('pointercancel', onPointerUp);
-
-    return () => {
-      window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', onPointerUp);
-      window.removeEventListener('pointercancel', onPointerUp);
-    };
-  }, [isExpanded, setWidgetPosition]);
-
   const onPointerDown = (e: preact.JSX.TargetedPointerEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest('button, a')) return;
 
@@ -150,6 +100,51 @@ export function Widget() {
       };
       document.body.style.userSelect = 'none';
     }
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (!isDragging.current) return;
+
+      const dx = Math.abs(moveEvent.clientX - startPos.current.x);
+      const dy = Math.abs(moveEvent.clientY - startPos.current.y);
+      if (!hasMoved.current && dx < 5 && dy < 5) return;
+
+      hasMoved.current = true;
+      const newLeft = moveEvent.clientX - dragOffset.current.x;
+      const newTop = moveEvent.clientY - dragOffset.current.y;
+
+      const height = isExpanded ? 240 : 44;
+      const width = isExpanded ? 260 : 160;
+
+      const newBottom = window.innerHeight - (newTop + height);
+
+      const maxLeft = window.innerWidth - width;
+      const clampedLeft = Math.max(16, Math.min(newLeft, maxLeft - 16));
+      const clampedBottom = Math.max(16, Math.min(newBottom, window.innerHeight - height - 16));
+
+      if (widgetRef.current) {
+        widgetRef.current.style.left = `${clampedLeft}px`;
+        widgetRef.current.style.bottom = `${clampedBottom}px`;
+      }
+    };
+
+    const onPointerUp = () => {
+      isDragging.current = false;
+      document.body.style.userSelect = '';
+
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+
+      if (hasMoved.current && widgetRef.current) {
+        const currentRect = widgetRef.current.getBoundingClientRect();
+        const bottom = window.innerHeight - currentRect.bottom;
+        setWidgetPosition({ x: currentRect.left, y: bottom });
+      }
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
   };
 
   const handleWidgetClick = (e: preact.JSX.TargetedMouseEvent<HTMLDivElement>) => {
@@ -161,7 +156,7 @@ export function Widget() {
   // -----------------------------------------
   // RENDER DYNAMIC ISLAND
   // -----------------------------------------
-  
+
   // Base structural classes for smooth dynamic transitions
   const containerClasses = [
     'fixed z-[2147483647] flex flex-col items-center select-none overflow-hidden',
@@ -169,7 +164,9 @@ export function Widget() {
     colors.border,
     colors.shadow,
     'transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]', // Snappy but smooth spring-like curve
-    isExpanded ? 'w-[260px] h-[240px] rounded-[32px] p-4 cursor-move' : 'w-[140px] h-[40px] rounded-full px-4 justify-center hover:bg-[#121217]/95 cursor-pointer'
+    isExpanded
+      ? 'w-[260px] h-[240px] rounded-[32px] p-4 cursor-move'
+      : 'w-[140px] h-[40px] rounded-full px-4 justify-center hover:bg-[#121217]/95 cursor-pointer',
   ].join(' ');
 
   return (
@@ -185,7 +182,7 @@ export function Widget() {
       {/* ------------------------------------- */}
       {/* COLLAPSED / HEADER STATE              */}
       {/* ------------------------------------- */}
-      <div 
+      <div
         className={`w-full flex items-center justify-between transition-all duration-300 ${isExpanded ? 'h-6 mb-3' : 'h-full'}`}
       >
         {/* Left Side: Status Dot & Percentage */}
@@ -196,23 +193,29 @@ export function Widget() {
             )}
             <div className={`w-2.5 h-2.5 rounded-full ${colors.dot} ${colors.glow}`}></div>
           </div>
-          <span className={`font-semibold tracking-tight transition-all duration-300 ${isExpanded ? 'text-white text-[14px]' : 'text-white text-[15px]'}`}>
+          <span
+            className={`font-semibold tracking-tight transition-all duration-300 ${isExpanded ? 'text-white text-[14px]' : 'text-white text-[15px]'}`}
+          >
             {Math.round(fillPercentage)}%
           </span>
         </div>
 
         {/* Center line only in collapsed mode */}
-        {!isExpanded && (
-          <div className="w-[1px] h-[16px] bg-white/10 mx-1"></div>
-        )}
+        {!isExpanded && <div className="w-[1px] h-[16px] bg-white/10 mx-1"></div>}
 
         {/* Right Side: Token count or Close Button */}
         <div className="flex items-center">
           {!isExpanded ? (
-            <span className={`font-semibold tracking-tight text-[15px] ${colors.text}`}>{tokenText}</span>
+            <span className={`font-semibold tracking-tight text-[15px] ${colors.text}`}>
+              {tokenText}
+            </span>
           ) : (
             <button
-              onClick={(e) => { e.stopPropagation(); toggleWidget(); setIsHovered(false); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggleWidget();
+                setIsHovered(false);
+              }}
               className="text-[#a1a1aa] hover:text-white transition-colors cursor-pointer rounded-full bg-white/5 hover:bg-white/10 p-1 pointer-events-auto"
             >
               <X size={14} strokeWidth={2.5} />
@@ -224,7 +227,7 @@ export function Widget() {
       {/* ------------------------------------- */}
       {/* EXPANDED CONTENT AREA                 */}
       {/* ------------------------------------- */}
-      <div 
+      <div
         className={`w-full flex flex-col items-center transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] origin-top ${
           isExpanded ? 'opacity-100 scale-100 h-full' : 'opacity-0 scale-95 h-0 pointer-events-none'
         }`}
@@ -240,8 +243,8 @@ export function Widget() {
             <span className="text-white font-semibold">{tokenText}</span> / {limitText} tokens
           </div>
           <div className="flex items-center gap-2 mt-1.5">
-             <HealthBadge status={status} />
-             <PlatformBadge platform={platform} />
+            <HealthBadge status={status} />
+            <PlatformBadge platform={platform} />
           </div>
         </div>
 
@@ -249,16 +252,25 @@ export function Widget() {
 
         {/* Dashboard Link - Full Width Button style */}
         <button
-          onClick={(e) => { e.stopPropagation(); openSidePanel(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            openSidePanel();
+          }}
           className="w-full h-[42px] mt-1 bg-white/5 hover:bg-white/10 border border-white/5 rounded-[14px] flex items-center justify-center gap-2 text-[14px] font-semibold text-white transition-all pointer-events-auto shadow-sm active:scale-95 group"
         >
-          View Dashboard <ArrowRight size={14} className="text-[#a1a1aa] group-hover:text-white transition-colors" />
+          View Dashboard{' '}
+          <ArrowRight
+            size={14}
+            className="text-[#a1a1aa] group-hover:text-white transition-colors"
+          />
         </button>
       </div>
 
       {/* Drag Indicator (only visible when expanded) */}
-      <div className={`absolute bottom-1.5 flex justify-center w-full pointer-events-none transition-opacity duration-300 ${isExpanded ? 'opacity-30' : 'opacity-0'}`}>
-         <div className="w-8 h-1 rounded-full bg-white"></div>
+      <div
+        className={`absolute bottom-1.5 flex justify-center w-full pointer-events-none transition-opacity duration-300 ${isExpanded ? 'opacity-30' : 'opacity-0'}`}
+      >
+        <div className="w-8 h-1 rounded-full bg-white"></div>
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import { PlatformAdapter } from './types';
-import { ChatMessage } from './engineTypes';
+import { ChatMessage } from '../core/models';
+import { safeQuerySelectorAll } from './utils';
 
 export const perplexityAdapter: PlatformAdapter = {
   id: 'perplexity',
@@ -13,11 +14,10 @@ export const perplexityAdapter: PlatformAdapter = {
 
   extractMessages(): ChatMessage[] {
     const messages: ChatMessage[] = [];
-    const elements = document.querySelectorAll('.prose, [dir="auto"]');
+    const elements = safeQuerySelectorAll('.prose, [dir="auto"]');
 
     elements.forEach((el, index) => {
       const id = `msg-${index}`;
-      // Perplexity DOM often alternates or doesn't have strict roles without traversing tree, fallback to heuristics
       const role = index % 2 === 0 ? 'user' : 'ai';
       const text = (el as HTMLElement).innerText?.trim();
 

@@ -8,7 +8,9 @@ export type MessageType =
   | 'CONTENT_MUTATION'
   | 'OPEN_SIDE_PANEL'
   | 'REGENERATE_SUMMARY'
-  | 'TOKENIZE_REQUEST';
+  | 'TOKENIZE_REQUEST'
+  | 'SET_ACTIVE_CONVERSATION'
+  | 'NETWORK_PAYLOAD';
 
 export interface BaseMessage {
   type: MessageType;
@@ -36,6 +38,16 @@ export interface ContentMutationMessage extends BaseMessage {
   payload: DOMObservation;
 }
 
+export interface NetworkPayloadMessage extends BaseMessage {
+  type: 'NETWORK_PAYLOAD';
+  payload: {
+    url: string;
+    conversationId: string;
+    mapping: Record<string, any>;
+    currentNode?: string | null;
+  };
+}
+
 export interface OpenSidePanelMessage extends BaseMessage {
   type: 'OPEN_SIDE_PANEL';
 }
@@ -47,9 +59,24 @@ export interface RegenerateSummaryMessage extends BaseMessage {
 export interface TokenizeRequestMessage extends BaseMessage {
   type: 'TOKENIZE_REQUEST';
   payload: {
+    jobContext: {
+      jobId: string;
+      conversationId: string;
+      conversationVersion: number;
+      inputHash: string;
+      inputMessageCount: number;
+      generation: number;
+    };
     platformId: string;
     maxContext: number;
     messages: ChatMessage[];
+  };
+}
+
+export interface SetActiveConversationMessage extends BaseMessage {
+  type: 'SET_ACTIVE_CONVERSATION';
+  payload: {
+    conversationId: string;
   };
 }
 
@@ -58,12 +85,15 @@ export type ExtensionMessage =
   | StateUpdatedMessage
   | UpdateTokenCountMessage
   | ContentMutationMessage
+  | NetworkPayloadMessage
   | OpenSidePanelMessage
   | RegenerateSummaryMessage
-  | TokenizeRequestMessage;
+  | TokenizeRequestMessage
+  | SetActiveConversationMessage;
 
 export interface MessageResponse<T = unknown> {
   success: boolean;
   data?: T;
   error?: string;
+  contextInvalidated?: boolean;
 }

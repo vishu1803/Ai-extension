@@ -29,7 +29,7 @@ export interface AcquisitionStatus {
 // 2. Strategy Interfaces
 export interface AcquisitionStrategy {
   type: AcquisitionStrategyType;
-  canExecute(platform: PlatformId): boolean;
+  canExecute(platform: PlatformId, threadId?: string): boolean;
   execute(
     threadId: string,
     signal?: AbortSignal,

@@ -1,5 +1,6 @@
 import { PlatformAdapter } from './types';
-import { ChatMessage } from './engineTypes';
+import { ChatMessage } from '../core/models';
+import { safeQuerySelectorAll } from './utils';
 
 export const grokAdapter: PlatformAdapter = {
   id: 'grok',
@@ -13,7 +14,7 @@ export const grokAdapter: PlatformAdapter = {
 
   extractMessages(): ChatMessage[] {
     const messages: ChatMessage[] = [];
-    const elements = document.querySelectorAll(
+    const elements = safeQuerySelectorAll(
       '[data-testid="grok-message"], .grok-message, [data-testid="user-message"]'
     );
 

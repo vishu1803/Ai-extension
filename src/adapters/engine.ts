@@ -5,155 +5,375 @@ import {
   NetworkInterceptStrategy,
   NetworkHistoryStore,
 } from '../core/acquisition/strategies/NetworkInterceptStrategy';
-import { APIStrategy } from '../core/acquisition/strategies/APIStrategy';
-import { VisibleDOMStrategy } from '../core/acquisition/strategies/VisibleDOMStrategy';
 import { HydrationStrategy } from '../core/acquisition/strategies/HydrationStrategy';
+import { VisibleDOMStrategy } from '../core/acquisition/strategies/VisibleDOMStrategy';
 import { ConversationReadyDetector } from './ConversationReadyDetector';
-import {
-  tagAllCandidateScrollContainers,
-  inspectScrollContainer,
-  safeQuerySelectorAll,
-} from './utils';
+import { safeQuerySelector } from './utils';
+import { isExtensionContextInvalidated, messaging } from '../messaging/client';
+import { logger, DEBUG_TRACKER } from '../shared/logger';
 
-function hashMessages(messages: { id: string; text: string }[]): string {
-  let str = '';
-  for (const m of messages) {
-    str += m.id + m.text.length + m.text.slice(0, 50);
+import { perfMetrics, startMeasure, endMeasure } from '../shared/perfMode';
+import { SessionGeneration } from '../core/sessionGeneration';
+
+let globalActiveEngineCount = 0;
+
+const elementIdMap = new WeakMap<Element, string>();
+
+/**
+ * Extracts message ID and role from a single message element with robust fallbacks.
+ */
+function extractMessageMeta(el: Element, index: number): { id: string; role: 'user' | 'ai' } {
+  let role: 'user' | 'ai' | null = null;
+  const roleAttr =
+    el.getAttribute('data-message-author-role') ||
+    el.querySelector('[data-message-author-role]')?.getAttribute('data-message-author-role');
+  if (roleAttr === 'user') {
+    role = 'user';
+  } else if (roleAttr === 'assistant' || roleAttr === 'ai') {
+    role = 'ai';
+  } else {
+    const text = (el as HTMLElement).innerText || '';
+    const html = el.innerHTML || '';
+    if (el.classList.contains('whitespace-pre-wrap') && !el.classList.contains('prose')) {
+      role = 'user';
+    } else if (text.startsWith('You\n') || html.includes('alt="User"')) {
+      role = 'user';
+    } else if (
+      el.classList.contains('prose') ||
+      el.querySelector('.prose') ||
+      el.querySelector('.result-streaming')
+    ) {
+      role = 'ai';
+    } else {
+      role = index % 2 === 0 ? 'user' : 'ai';
+    }
   }
-  return str;
+
+  const parentContainer =
+    el.closest?.('article, [data-message-author-role], div[class*="conversation-turn"]') || el;
+
+  let id =
+    el.getAttribute('data-message-id') ||
+    el.querySelector('[data-message-id]')?.getAttribute('data-message-id') ||
+    el.closest?.('[data-message-id]')?.getAttribute('data-message-id') ||
+    parentContainer.getAttribute('data-message-id') ||
+    null;
+
+  if (!id) {
+    id = elementIdMap.get(parentContainer) || elementIdMap.get(el) || null;
+    if (!id) {
+      id = `msg-${role || 'turn'}-${index}-${Date.now().toString(36)}`;
+      elementIdMap.set(parentContainer, id);
+      elementIdMap.set(el, id);
+    }
+  }
+
+  return { id, role: role || 'ai' };
+}
+
+/**
+ * Extracts text from a single message element.
+ */
+function extractSingleMessageText(el: Element): string {
+  return (el as HTMLElement).innerText?.trim() || '';
 }
 
 export class RobustDOMEngine {
+  public readonly engineId: string;
+  public readonly observerId: string;
   private observer: MutationObserver | null = null;
   private adapter: PlatformAdapter;
   private onObservation: (obs: DOMObservation) => void;
   private lastHash: string = '';
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  private stabilizationTimer: ReturnType<typeof setTimeout> | null = null;
+  private mutationBatchTimer: ReturnType<typeof setTimeout> | null = null;
   private isChecking: boolean = false;
+  private mutationPending: boolean = false;
+  private isNavigating: boolean = false;
+  private quietMode: boolean = false;
   private acquirer: ConversationAcquirer;
   private readyDetector: ConversationReadyDetector;
   private conversationReady: boolean = false;
+  private destroyed: boolean = false;
 
-  // Tracing State
   private wasStreaming = false;
   private lastUserMsgId = '';
   private lastAssistantMsgId = '';
+  private currentConversationId: string = '';
+  private activeConversationId: string | null = null;
+  private lastCommittedConversationId: string = '';
+  private candidateConversationId: string | null = null;
+
+  // Track the last observed message to detect actual changes cheaply
+  private lastObservedMsgId: string = '';
+  private lastObservedTextLength: number = 0;
 
   constructor(adapter: PlatformAdapter, onObservation: (obs: DOMObservation) => void) {
+    this.engineId = `engine_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    this.observerId = `obs_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     this.adapter = adapter;
     this.onObservation = onObservation;
 
+    // ChatGPT uses NetworkInterceptStrategy as primary history source; APIStrategy is omitted to prevent 404s
     this.acquirer = new ConversationAcquirer([
-      new NetworkInterceptStrategy(adapter), // Priority 1: Intercepted Network History
-      new APIStrategy(adapter), // Priority 2: Direct API fetch fallback
-      new HydrationStrategy(adapter), // Priority 3: Page hydration fallback
-      new VisibleDOMStrategy(adapter), // Priority 4: Visible DOM fallback
+      new NetworkInterceptStrategy(adapter),
+      new HydrationStrategy(adapter),
+      new VisibleDOMStrategy(adapter),
     ]);
-
-    if (!this.acquirer) {
-      throw new Error(
-        '[Engine Fatal] Dependency injection failed: ConversationAcquirer is undefined.'
-      );
-    }
 
     this.readyDetector = new ConversationReadyDetector(adapter, () => {
       this.onConversationReady();
     });
-
-    console.log(`[Engine] ConversationAcquirer created`);
-    console.log(`[Engine] Registered strategies: NetworkIntercept, API, Hydration, VisibleDOM`);
-    console.log(`[Engine] RobustDOMEngine created`);
-    console.log(`[Engine] Acquisition dependency injected: true`);
   }
 
   public triggerAcquisition(reason: string = 'ExternalTrigger'): void {
     this.scheduleUpdate(reason);
   }
 
-  private onConversationReady(): void {
+  private onConversationReady = (): void => {
+    if (this.destroyed || this.isNavigating || this.quietMode) return;
     this.conversationReady = true;
 
-    // Attach MutationObserver now that conversation is ready
-    this.observer = new MutationObserver(() => {
-      this.scheduleUpdate('MutationObserver');
-    });
+    if (!this.observer) {
+      this.observer = new MutationObserver((records) => {
+        perfMetrics.recordsObserved += records.length;
+        this.handleMutationBatch();
+      });
 
-    const MAX_OBSERVER_RETRIES = 20; // 20 × 50ms = 1s max
-    let retryCount = 0;
-    const startObserver = () => {
       const target = this.getObservationTarget();
       if (target) {
-        this.observer?.observe(target, {
+        this.observer.observe(target, {
           childList: true,
           subtree: true,
           characterData: true,
         });
-        console.log(`[Observer] Attached to ${target.tagName || 'Document'}`);
-      } else if (retryCount < MAX_OBSERVER_RETRIES) {
-        retryCount++;
-        setTimeout(startObserver, 50);
-      } else {
-        console.warn(
-          `[Observer] Failed to find observation target after ${MAX_OBSERVER_RETRIES} retries`
-        );
+        logger.debug(`[Observer] Attached to ${target.tagName || 'Document'}`);
       }
-    };
-    startObserver();
+    }
 
-    // First acquisition run
     this.scheduleUpdate('ConversationReady');
-  }
+  };
+
+  /**
+   * THIN MUTATION HANDLER — Sets dirty flag and schedules lightweight observation.
+   * This runs in the MutationObserver callback and completes in <1ms.
+   */
+  private handleMutationBatch = () => {
+    perfMetrics.mutationCallbacks++;
+    if (this.destroyed) return;
+
+    // PHASE 1: QUIET WINDOW — Cheap dirty flag only, zero work while ChatGPT renders
+    if (this.quietMode || this.isNavigating || !this.conversationReady) {
+      this.mutationPending = true;
+      return;
+    }
+
+    if (this.mutationPending) return; // Coalesce: already scheduled
+    this.mutationPending = true;
+
+    const isStreaming = this.adapter.isStreaming ? this.adapter.isStreaming() : false;
+    const delay = isStreaming ? 400 : 250;
+
+    this.mutationBatchTimer = setTimeout(() => {
+      startMeasure('tracker:mutationBatch');
+      this.mutationPending = false;
+      this.mutationBatchTimer = null;
+
+      if (!this.destroyed && !this.isNavigating && !this.quietMode && this.conversationReady) {
+        this.observeLatestMessage('MutationBatch');
+      }
+
+      const duration = endMeasure('tracker:mutationBatch');
+      if (DEBUG_TRACKER) {
+        logger.perf('mutationBatch', duration);
+      }
+    }, delay);
+  };
+
+  private getObservationTarget = (): Element | null => {
+    perfMetrics.domQueries++;
+    if (this.adapter.observeSelector) {
+      const el = safeQuerySelector(this.adapter.observeSelector);
+      if (el) return el;
+    }
+    return safeQuerySelector('main') || (typeof document !== 'undefined' ? document.body : null);
+  };
 
   public start() {
-    console.log(`[Engine] Stateless telemetry observer started for ${this.adapter.id}.`);
+    this.destroyed = false;
+    globalActiveEngineCount++;
+
+    logger.tracker('ENGINE_STARTED', { platform: this.adapter.id });
+
+    const threadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
+    const conversationId = `${this.adapter.id}:${threadId || window.location.href}`;
+    this.currentConversationId = conversationId;
+    this.activeConversationId = conversationId;
+
+    logger.tracker('CONVERSATION_DETECTED', { conversationId });
 
     document.addEventListener('visibilitychange', this.handleVisibilityChange);
     this.setupUrlListener();
-
-    // Delegate to ConversationReadyDetector — no fixed delays
     this.readyDetector.start();
+
+    // Notify background of active conversation immediately
+    messaging
+      .sendToBackground({
+        type: 'SET_ACTIVE_CONVERSATION',
+        payload: { conversationId },
+      })
+      .catch(() => {});
+
+    logger.tracker('ENGINE_ACTIVE');
   }
 
   public stop() {
+    this.dispose();
+  }
+
+  public dispose() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    globalActiveEngineCount = Math.max(0, globalActiveEngineCount - 1);
+
     if (this.observer) {
       this.observer.disconnect();
       this.observer = null;
     }
+    this.acquirer.cancel();
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    if (this.stabilizationTimer) {
+      clearTimeout(this.stabilizationTimer);
+      this.stabilizationTimer = null;
+    }
+    if (this.mutationBatchTimer) {
+      clearTimeout(this.mutationBatchTimer);
+      this.mutationBatchTimer = null;
+    }
     this.readyDetector.stop();
     this.conversationReady = false;
+    this.isNavigating = false;
+    this.quietMode = false;
+    this.mutationPending = false;
     document.removeEventListener('visibilitychange', this.handleVisibilityChange);
-  }
-
-  private getObservationTarget(): Element | null {
-    if (this.adapter.observeSelector) {
-      const target = document.querySelector(this.adapter.observeSelector);
-      if (target) return target;
-    }
-    return (
-      document.querySelector('[role="log"]') ||
-      document.querySelector('main') ||
-      document.querySelector('[role="main"]') ||
-      document.body
-    );
+    window.removeEventListener('locationchange', this.handleLocationChange);
+    window.removeEventListener('popstate', this.handlePopState);
   }
 
   private handleVisibilityChange = () => {
-    if (document.visibilityState === 'hidden') {
-      this.observer?.disconnect();
-    } else {
-      const target = this.getObservationTarget();
-      if (target) {
-        this.observer?.observe(target, {
-          childList: true,
-          subtree: true,
-          characterData: true,
-        });
-        this.scheduleUpdate();
-      }
+    if (this.destroyed || this.isNavigating || this.quietMode) return;
+    if (document.visibilityState === 'visible') {
+      this.scheduleUpdate('VisibilityChanged');
+    }
+  };
+
+  private handlePopState = () => {
+    if (this.destroyed) return;
+    window.dispatchEvent(new Event('locationchange'));
+  };
+
+  /**
+   * Navigation Transaction:
+   * PROVISIONAL NAVIGATION (QUIET MODE) -> STABILIZE -> COMMIT CONVERSATION SWITCH
+   */
+  private handleLocationChange = () => {
+    if (this.destroyed) return;
+
+    const candidateThreadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
+    const candidateConvId = `${this.adapter.id}:${candidateThreadId || window.location.href}`;
+
+    // 1. If candidate ID is already the active/committed conversation, do nothing
+    if (
+      this.activeConversationId === candidateConvId ||
+      this.lastCommittedConversationId === candidateConvId
+    ) {
+      return;
+    }
+
+    // 2. PROVISIONAL NAVIGATION: Enter QUIET MODE and freeze observations during transition
+    this.isNavigating = true;
+    this.quietMode = true;
+    this.candidateConversationId = candidateConvId;
+    this.conversationReady = false;
+
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    if (this.stabilizationTimer) {
+      clearTimeout(this.stabilizationTimer);
+    }
+    if (this.mutationBatchTimer) {
+      clearTimeout(this.mutationBatchTimer);
+      this.mutationBatchTimer = null;
+    }
+
+    // 3. STABILIZE: Schedule single stabilization check (150ms window)
+    this.stabilizationTimer = setTimeout(() => {
+      this.stabilizationTimer = null;
+      this.commitNavigationTransaction();
+    }, 150);
+  };
+
+  private commitNavigationTransaction = () => {
+    if (this.destroyed) return;
+    startMeasure('tracker:navigation');
+    const t0 = performance.now();
+
+    const resolvedThreadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
+    const resolvedConvId = `${this.adapter.id}:${resolvedThreadId || window.location.href}`;
+
+    if (
+      this.activeConversationId === resolvedConvId &&
+      this.lastCommittedConversationId === resolvedConvId
+    ) {
+      this.isNavigating = false;
+      this.quietMode = false;
+      this.candidateConversationId = null;
+      return;
+    }
+
+    const previousConvId = this.lastCommittedConversationId || this.activeConversationId || 'none';
+    this.activeConversationId = resolvedConvId;
+    this.lastCommittedConversationId = resolvedConvId;
+    this.currentConversationId = resolvedConvId;
+    this.candidateConversationId = null;
+    this.isNavigating = false;
+    this.quietMode = false;
+    this.lastHash = '';
+    this.lastUserMsgId = '';
+    this.lastAssistantMsgId = '';
+    this.lastObservedMsgId = '';
+    this.lastObservedTextLength = 0;
+
+    // Invalidate stale work and advance generation
+    SessionGeneration.switchConversation(resolvedConvId);
+
+    const duration = performance.now() - t0;
+    perfMetrics.navigationMs.push(duration);
+    endMeasure('tracker:navigation');
+
+    // Emit exactly ONE switch event
+    logger.tracker('conversation changed', `${previousConvId} -> ${resolvedConvId}`);
+    messaging.sendToBackground({
+      type: 'SET_ACTIVE_CONVERSATION',
+      payload: { conversationId: resolvedConvId },
+    });
+
+    // Reset ready detector and start observation for the new conversation
+    this.readyDetector.reset();
+
+    if (DEBUG_TRACKER) {
+      logger.perf('navigationCommit', duration);
     }
   };
 
@@ -161,141 +381,76 @@ export class RobustDOMEngine {
     const originalPushState = history.pushState;
     const originalReplaceState = history.replaceState;
 
-    history.pushState = function (...args) {
-      originalPushState.apply(this, args);
-      window.dispatchEvent(new Event('locationchange'));
-    };
-    history.replaceState = function (...args) {
-      originalReplaceState.apply(this, args);
-      window.dispatchEvent(new Event('locationchange'));
-    };
-    window.addEventListener('popstate', () => window.dispatchEvent(new Event('locationchange')));
+    if (!(history as any).__CTXTRACKER_PATCHED__) {
+      (history as any).__CTXTRACKER_PATCHED__ = true;
+      history.pushState = function (...args) {
+        originalPushState.apply(this, args);
+        window.dispatchEvent(new Event('locationchange'));
+      };
+      history.replaceState = function (...args) {
+        originalReplaceState.apply(this, args);
+        window.dispatchEvent(new Event('locationchange'));
+      };
+    }
 
-    window.addEventListener('locationchange', () => {
-      // Reset readiness state on navigation — no fixed delays
-      this.lastHash = '';
-      this.conversationReady = false;
-
-      // Disconnect old observer
-      if (this.observer) {
-        this.observer.disconnect();
-        this.observer = null;
-      }
-
-      // Re-enter the readiness gate
-      this.readyDetector.reset();
-    });
+    window.addEventListener('popstate', this.handlePopState);
+    window.addEventListener('locationchange', this.handleLocationChange);
   }
 
   private scheduleUpdate(reason: string = 'Unknown') {
+    if (this.destroyed || this.isNavigating) return;
+    if (isExtensionContextInvalidated()) {
+      this.dispose();
+      return;
+    }
     if (document.visibilityState === 'hidden') return;
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
 
+    const boundConvId = this.currentConversationId;
+    // Use longer debounce during streaming to coalesce rapid DOM mutations
+    const isStreaming = this.adapter.isStreaming ? this.adapter.isStreaming() : false;
+    const delay = isStreaming ? 400 : 250;
+
     this.debounceTimer = setTimeout(() => {
-      this.processDOM(reason);
+      this.observeLatestMessage(reason, boundConvId);
       this.debounceTimer = null;
-    }, 250);
+    }, delay);
   }
 
-  private async processDOM(reason: string = 'Unknown') {
-    const timestamp = new Date().toISOString();
-    console.log(`\n--- processDOM Executed ---`);
-    console.log(`Timestamp: ${timestamp}`);
-    console.log(`Mutation reason: ${reason}`);
-
-    if (!this.conversationReady) {
-      console.log(`[Engine] Skip: conversation not ready yet`);
+  /**
+   * LIGHTWEIGHT OBSERVATION — Replaces the old heavy processDOM().
+   *
+   * Instead of iterating ALL message elements and extracting ALL text:
+   * 1. Find the LAST message element (1 querySelector call)
+   * 2. Extract its ID, role, and text (1 element only)
+   * 3. If it changed, send a lightweight observation to background
+   *
+   * Target: < 16ms total execution time, typically < 2ms.
+   *
+   * The background worker handles all heavy work:
+   * - Canonical merge, tokenization, IndexedDB, AppState updates
+   */
+  private async observeLatestMessage(reason: string = 'Unknown', boundConvId?: string) {
+    if (this.destroyed || this.isNavigating || this.quietMode) return;
+    if (isExtensionContextInvalidated()) {
+      this.dispose();
       return;
     }
 
-    const getScrollContainer = () => {
-      tagAllCandidateScrollContainers();
-      const selectors = [
-        'div[class*="react-scroll-to-bottom"]',
-        'div[class*="react-scroll-to-bottom--css"]',
-        'main div.overflow-y-auto',
-        'div.overflow-y-auto',
-        'main',
-        '[role="main"]',
-      ];
-      for (const selector of selectors) {
-        const el = document.querySelector(selector);
-        if (el && el.scrollHeight > el.clientHeight) {
-          console.log(`[Investigation 3 - Scroll container identity]
-Component: processDOM (Selected Option)
-tagName: ${el.tagName}
-className: ${el.className}
-id: ${el.id}
-overflowY: ${window.getComputedStyle(el).overflowY}
-scrollTop: ${el.scrollTop}
-scrollHeight: ${el.scrollHeight}
-clientHeight: ${el.clientHeight}
-boundingClientRect: ${JSON.stringify(el.getBoundingClientRect())}`);
-          inspectScrollContainer(el, 'processDOM');
-          return el;
-        }
-      }
-      const fallback = document.documentElement || document.body;
-      console.log(`[Investigation 3 - Scroll container identity]
-Component: processDOM (Fallback)
-tagName: ${fallback.tagName}
-className: ${fallback.className}
-id: ${fallback.id}
-overflowY: ${window.getComputedStyle(fallback).overflowY}
-scrollTop: ${fallback.scrollTop}
-scrollHeight: ${fallback.scrollHeight}
-clientHeight: ${fallback.clientHeight}
-boundingClientRect: ${JSON.stringify(fallback.getBoundingClientRect())}`);
-      inspectScrollContainer(fallback, 'processDOM');
-      return fallback;
-    };
-
-    const scrollContainer = getScrollContainer();
-    const scrollTop = scrollContainer ? scrollContainer.scrollTop : 0;
-    const scrollHeight = scrollContainer ? scrollContainer.scrollHeight : 0;
-    const clientHeight = scrollContainer ? scrollContainer.clientHeight : 0;
-    const scrollRatio = clientHeight > 0 ? scrollHeight / clientHeight : 0;
-
-    // Find first visible message node position
-    const selectors = this.adapter.domSelectors || [
-      '[data-message-author-role]',
-      'article',
-      '.prose',
-    ];
-    let firstNode: Element | null = null;
-    for (const selector of selectors) {
-      const match = document.querySelector(selector);
-      if (match) {
-        firstNode = match;
-        break;
-      }
+    if (!this.conversationReady) {
+      logger.debug(`[Engine] Skip: conversation not ready yet`);
+      return;
     }
-    let firstNodePosStr = 'N/A';
-    if (firstNode && scrollContainer) {
-      const containerRect = scrollContainer.getBoundingClientRect();
-      const nodeRect = firstNode.getBoundingClientRect();
-      const topPos = nodeRect.top - containerRect.top;
-      firstNodePosStr = `${Math.round(topPos)}px from viewport top`;
-    }
-
-    const estimatedHiddenViewportAbove = clientHeight > 0 ? scrollTop / clientHeight : 0;
-    const estimatedHiddenViewportBelow =
-      clientHeight > 0 ? Math.max(0, scrollHeight - scrollTop - clientHeight) / clientHeight : 0;
-
-    console.log(
-      `[Scroll] top=${scrollTop} height=${scrollHeight} client=${clientHeight} ` +
-        `ratio=${scrollRatio.toFixed(2)} firstNode=${firstNodePosStr} ` +
-        `hiddenAbove=${estimatedHiddenViewportAbove.toFixed(2)} hiddenBelow=${estimatedHiddenViewportBelow.toFixed(2)}`
-    );
 
     if (this.isChecking) {
-      console.log(`[Engine] Skip Emission: extraction error / isChecking lock active`);
+      logger.debug(`[Engine] Skip Emission: lock active`);
       return;
     }
 
     this.isChecking = true;
+    startMeasure('tracker:observeLatest');
 
     try {
       let threadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
@@ -305,139 +460,124 @@ boundingClientRect: ${JSON.stringify(fallback.getBoundingClientRect())}`);
           threadId = stored.conversationId;
         }
       }
-      let visibleMessages: ChatMessage[] = [];
-      let acquisitionStrategyUsed = 'DOM';
 
-      // Live observation: extract current live DOM messages using VisibleDOMStrategy
-      const domStrategy = new VisibleDOMStrategy(this.adapter);
-      const domResult = await domStrategy.execute(threadId || 'unknown');
+      const conversationId = `${this.adapter.id}:${threadId || window.location.href}`;
+      const isStreaming = this.adapter.isStreaming ? this.adapter.isStreaming() : false;
 
-      if (domResult.success && domResult.messages.length > 0) {
-        visibleMessages = domResult.messages;
-        acquisitionStrategyUsed = 'DOM';
-      } else {
-        const result = await this.acquirer.acquire(threadId || 'unknown', this.adapter.id);
-        visibleMessages = result.messages;
-        acquisitionStrategyUsed = result.strategy;
-      }
+      // === THIN OBSERVATION: Find only the latest message elements ===
+      perfMetrics.domQueries++;
+      const selectors = this.adapter.domSelectors || ['[data-message-author-role]', 'article'];
+      let matchingNodes: Element[] = [];
 
-      // Calculate actual message count in live ChatGPT DOM
-      const selectors = this.adapter.domSelectors || [
-        '[data-message-author-role]',
-        'article',
-        '.prose',
-      ];
-      let querySelectorCount = 0;
-      for (const sel of selectors) {
-        const matches = safeQuerySelectorAll(sel);
-        if (matches.length > 0) {
-          querySelectorCount = matches.length;
-          break;
+      const rootContainer =
+        safeQuerySelector('main') || (typeof document !== 'undefined' ? document.body : null);
+
+      if (rootContainer) {
+        for (const selector of selectors) {
+          perfMetrics.domQueries++;
+          const matches = rootContainer.querySelectorAll(selector);
+          if (matches.length > 0) {
+            matchingNodes = Array.from(matches);
+            break;
+          }
         }
       }
 
-      const storedNetHistory = NetworkHistoryStore.get(threadId);
-      const networkCount = storedNetHistory ? storedNetHistory.messages.length : 0;
-
-      console.log(
-        `[VERIFY:DOM_SOURCE]\n` +
-          `source=ACTUAL_DOM\n` +
-          `querySelectorCount=${querySelectorCount}\n` +
-          `canonicalCount=${visibleMessages.length}\n` +
-          `networkCount=${networkCount}`
-      );
-
-      console.log(`[Investigation 1 - Identity Check]
-window.location.href: ${window.location.href}
-URL thread ID: ${threadId}
-ConversationAcquirer thread ID: ${threadId || 'unknown'}
-Actual DOM node count: ${querySelectorCount}
-Acquired message count: ${visibleMessages.length}
-scrollTop: ${scrollTop}
-scrollHeight: ${scrollHeight}
-clientHeight: ${clientHeight}`);
-
-      const currentHash = hashMessages(visibleMessages);
-
-      const isStreaming = this.adapter.isStreaming ? this.adapter.isStreaming() : false;
-
-      console.log(`Actual DOM querySelector count: ${querySelectorCount}`);
-      console.log(`Acquired message count: ${visibleMessages.length}`);
-
-      if (visibleMessages.length === 0) {
-        console.log(`[Engine] Skip Emission: no messages`);
+      if (matchingNodes.length === 0) {
         this.isChecking = false;
         return;
       }
 
-      const lastMsg = visibleMessages[visibleMessages.length - 1];
-      console.log(`Last visible message ID: ${lastMsg.id}`);
-      console.log(`Last visible message role: ${lastMsg.role}`);
-      console.log(
-        `Last visible message first 100 chars: ${lastMsg.text.substring(0, 100).replace(/\n/g, ' ')}`
-      );
-      console.log(`Current extraction hash: ${currentHash}`);
-      console.log(`Previous extraction hash: ${this.lastHash}`);
+      // Check the latest messages (up to last 2: user and/or assistant)
+      const candidateElements = matchingNodes.slice(-2);
+      const observedMessages: ChatMessage[] = [];
 
-      // Streaming Tracing Logic
-      if (lastMsg.role === 'user' && lastMsg.id !== this.lastUserMsgId) {
-        console.log(`[Trace] NEW USER PROMPT SUBMITTED: First appeared in DOM (ID: ${lastMsg.id})`);
-        this.lastUserMsgId = lastMsg.id;
+      for (let i = 0; i < candidateElements.length; i++) {
+        const el = candidateElements[i];
+        const meta = extractMessageMeta(el, matchingNodes.length - candidateElements.length + i);
+        if (!meta) continue;
+        const text = extractSingleMessageText(el);
+        if (!text) continue;
+        observedMessages.push({
+          id: meta.id,
+          role: meta.role,
+          text,
+        });
       }
 
-      if (lastMsg.role === 'ai' && lastMsg.id !== this.lastAssistantMsgId) {
-        console.log(`[Trace] ASSISTANT PLACEHOLDER APPEARED (ID: ${lastMsg.id})`);
-        this.lastAssistantMsgId = lastMsg.id;
+      if (observedMessages.length === 0) {
+        this.isChecking = false;
+        return;
       }
 
+      const model = this.adapter.getModelId ? this.adapter.getModelId() : undefined;
+
+      // Cheap change detection across the active turn
+      const turnSignature =
+        observedMessages
+          .map(
+            (m) => `${m.id}:${m.role}:${m.text.length}:${m.text.slice(0, 30)}_${m.text.slice(-30)}`
+          )
+          .join('|') + `:${isStreaming}:${model || 'unknown'}`;
+
+      const streamingJustFinished = !isStreaming && this.wasStreaming;
       if (isStreaming && !this.wasStreaming) {
-        console.log(`[Trace] STREAMING BEGINS`);
         this.wasStreaming = true;
-      } else if (!isStreaming && this.wasStreaming) {
-        console.log(`[Trace] STREAMING ENDS`);
+      } else if (streamingJustFinished) {
         this.wasStreaming = false;
       }
 
+      // Track user/assistant message IDs
+      const latestUser = observedMessages.find((m) => m.role === 'user');
+      const latestAi = observedMessages.find((m) => m.role === 'ai');
+      if (latestUser && latestUser.id !== this.lastUserMsgId) {
+        this.lastUserMsgId = latestUser.id;
+      }
+      if (latestAi && latestAi.id !== this.lastAssistantMsgId) {
+        this.lastAssistantMsgId = latestAi.id;
+      }
+
+      // Decide whether to emit: Only emit if content actually changed
       let willEmit = false;
       if (isStreaming) {
-        willEmit = true;
-      } else if (currentHash !== this.lastHash) {
+        willEmit = turnSignature !== this.lastHash;
+      } else if (streamingJustFinished) {
+        willEmit = true; // Crucial: dispatch final state when streaming finishes
+      } else if (turnSignature !== this.lastHash) {
         willEmit = true;
       }
 
-      console.log(`Whether emission occurred: ${willEmit ? 'YES' : 'NO'}`);
+      if (!willEmit) {
+        this.isChecking = false;
+        return; // IGNORE DUPLICATE OBSERVATION
+      }
 
-      if (willEmit) {
-        this.lastHash = currentHash;
+      if (willEmit && !this.destroyed && !this.isNavigating && !this.quietMode) {
+        this.lastHash = turnSignature;
 
+        // Send lightweight observation to background
         const observation: DOMObservation = {
           platform: this.adapter.id,
           threadId,
+          conversationId,
           url: window.location.href,
           pageTitle: document.title,
-          messages: visibleMessages,
+          messages: observedMessages,
           isStreaming: isStreaming,
-          source: acquisitionStrategyUsed === 'NETWORK_INTERCEPT' ? 'NETWORK' : 'DOM',
-          scrollTop,
-          scrollHeight,
-          clientHeight,
+          model: model || 'unknown',
+          source: 'DOM',
         };
 
-        if (!isStreaming && !this.wasStreaming) {
-          console.log(`[Trace] FINAL CONTENT_MUTATION EMITTED (Streaming Complete / Steady State)`);
-        }
-
         this.onObservation(observation);
-      } else {
-        if (!isStreaming && currentHash === this.lastHash) {
-          console.log(`[Engine] Skip Emission: identical hash`);
-        }
       }
     } catch (err) {
-      console.log(`[Engine] Skip Emission: extraction error`);
-      console.error('[Engine] Extraction error:', err);
+      logger.error('DOM observation error', err);
     } finally {
       this.isChecking = false;
+      const duration = endMeasure('tracker:observeLatest');
+      if (DEBUG_TRACKER) {
+        logger.perf('observeLatest', duration);
+      }
     }
   }
 }

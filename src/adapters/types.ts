@@ -46,6 +46,11 @@ export interface PlatformAdapter {
   isStreaming?(): boolean;
 
   /**
+   * Returns the AI model identifier (e.g., 'gpt-4o', 'o1-preview') if available in the DOM/UI.
+   */
+  getModelId?(): string | null;
+
+  /**
    * Optional CSS selector to scope the MutationObserver to, reducing CPU usage.
    */
   observeSelector?: string;

@@ -1,5 +1,6 @@
 import { PlatformAdapter } from './types';
-import { ChatMessage } from './engineTypes';
+import { ChatMessage } from '../core/models';
+import { safeQuerySelectorAll } from './utils';
 
 export const geminiAdapter: PlatformAdapter = {
   id: 'gemini',
@@ -13,7 +14,7 @@ export const geminiAdapter: PlatformAdapter = {
 
   extractMessages(): ChatMessage[] {
     const messages: ChatMessage[] = [];
-    const elements = document.querySelectorAll(
+    const elements = safeQuerySelectorAll(
       'message-content, .model-response-text, user-query, .user-query-text, .message-content'
     );
 

@@ -24,15 +24,18 @@ import { NetworkHistoryStore } from './NetworkInterceptStrategy';
 export class APIStrategy implements AcquisitionStrategy {
   public type: AcquisitionStrategyType = 'API';
   private adapter: PlatformAdapter;
+  public enabled: boolean = false; // Disabled by default to eliminate obsolete 404s during normal ChatGPT operation
 
-  constructor(adapter: PlatformAdapter) {
+  constructor(adapter: PlatformAdapter, enabled: boolean = false) {
     this.adapter = adapter;
+    this.enabled = enabled;
   }
 
-  public canExecute(platform: PlatformId): boolean {
+  public canExecute(platform: PlatformId, threadId?: string): boolean {
+    if (!this.enabled) return false;
     if (platform !== 'chatgpt') return false;
-    const threadId = this.adapter.getThreadId ? this.adapter.getThreadId() : null;
-    if (threadId && NetworkHistoryStore.has(threadId)) {
+    const targetId = threadId || (this.adapter.getThreadId ? this.adapter.getThreadId() : null);
+    if (targetId && NetworkHistoryStore.has(targetId)) {
       return false; // Network history is authoritative fast-path
     }
     return true;
@@ -67,6 +70,9 @@ export class APIStrategy implements AcquisitionStrategy {
 
       // Handle HTTP errors
       if (!response.ok) {
+        console.log(
+          `[ACQUISITION_FAILED]\nconversationId=${threadId}\nsource=API\nreason=HTTP_${response.status}`
+        );
         return {
           strategy: this.type,
           success: false,
@@ -97,6 +103,9 @@ export class APIStrategy implements AcquisitionStrategy {
         };
       }
 
+      console.log(
+        `[ACQUISITION_FAILED]\nconversationId=${threadId}\nsource=API\nreason=EMPTY_MESSAGES`
+      );
       return {
         strategy: this.type,
         success: false,

@@ -8,6 +8,12 @@ import {
   AcquisitionStrategyType,
 } from '../types';
 import { safeQuerySelectorAll } from '../../../adapters/utils';
+import { logger } from '../../../shared/logger';
+
+import { perfMetrics } from '../../../shared/perfMode';
+
+// In-memory element ID mapping to eliminate forced reflows from DOM attribute writes
+const elementIdMap = new WeakMap<Element, string>();
 
 export class VisibleDOMStrategy implements AcquisitionStrategy {
   public type: AcquisitionStrategyType = 'DOM';
@@ -18,7 +24,7 @@ export class VisibleDOMStrategy implements AcquisitionStrategy {
   }
 
   public canExecute(_platform: PlatformId): boolean {
-    return true; // The DOM strategy is a universal fallback
+    return true; // Universal fallback
   }
 
   public async execute(
@@ -26,15 +32,12 @@ export class VisibleDOMStrategy implements AcquisitionStrategy {
     signal?: AbortSignal,
     _onProgress?: (status: AcquisitionStatus) => void
   ): Promise<AcquisitionResult> {
-    // Check if aborted before starting
     if (signal?.aborted) {
       return { strategy: this.type, success: false, messages: [], isComplete: false };
     }
 
     try {
       const messages = this.extractMessages();
-
-      // The DOM strategy only sees what's visible. It cannot guarantee completeness due to virtualization.
       return {
         strategy: this.type,
         success: true,
@@ -52,42 +55,28 @@ export class VisibleDOMStrategy implements AcquisitionStrategy {
     }
   }
 
-  private hashString(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash |= 0; // Convert to 32bit integer
-    }
-    return hash.toString(36);
-  }
-
   private extractMessages(): ChatMessage[] {
     const messages: ChatMessage[] = [];
-    const isChatGPT = this.adapter.id === 'chatgpt';
-
-    if (isChatGPT) {
-      console.group(`\n--- [ChatGPT Adapter] DOM Extraction Trace ---`);
-    }
-
     const selectors = this.adapter.domSelectors || ['article', '.prose, .whitespace-pre-wrap'];
+
+    perfMetrics.domQueries++;
+    const rootContainer =
+      typeof document !== 'undefined'
+        ? document.querySelector('main') || document.body || document
+        : undefined;
 
     let elements: Element[] = [];
     let fallbackLevel = '';
 
     for (const selector of selectors) {
-      const matches = safeQuerySelectorAll(selector);
-      if (isChatGPT) {
-        console.log(`Selector checked: ${selector} -> ${matches.length} nodes matched`);
-      }
+      perfMetrics.domQueries++;
+      const matches = rootContainer
+        ? safeQuerySelectorAll(selector, rootContainer)
+        : safeQuerySelectorAll(selector);
       if (matches.length > 0 && elements.length === 0) {
         elements = matches;
         fallbackLevel = selector;
       }
-    }
-
-    if (isChatGPT) {
-      console.log(`\nActive selector chosen: ${fallbackLevel}`);
     }
 
     let isProseFallback = false;
@@ -100,9 +89,8 @@ export class VisibleDOMStrategy implements AcquisitionStrategy {
     }
 
     const seenIds = new Set<string>();
-    let rejectedOlderMessages = 0;
 
-    elements.forEach((el, index) => {
+    elements.forEach((el) => {
       let role: MessageRole | null = null;
       let rejectReason: string | null = null;
 
@@ -129,7 +117,7 @@ export class VisibleDOMStrategy implements AcquisitionStrategy {
       const text = (el as HTMLElement).innerText?.trim();
 
       if (!rejectReason && (!text || text.length === 0)) {
-        rejectReason = 'empty text / missing content';
+        rejectReason = 'empty text';
       }
 
       if (!rejectReason && isProseFallback && text && text.length <= 5) {
@@ -141,17 +129,14 @@ export class VisibleDOMStrategy implements AcquisitionStrategy {
         id = el.closest?.('[data-message-id]')?.getAttribute('data-message-id') || null;
       }
       if (!id) {
-        id = el.getAttribute('data-tracker-id');
+        const parentContainer =
+          el.closest?.('article, [data-message-author-role], div[class*="conversation-turn"]') ||
+          el;
+        id = elementIdMap.get(parentContainer) || elementIdMap.get(el) || null;
         if (!id) {
-          const parentContainer =
-            el.closest?.('article, [data-message-author-role], div[class*="conversation-turn"]') ||
-            el;
-          id = parentContainer.getAttribute('data-tracker-id');
-          if (!id) {
-            id = `hash-${this.hashString((text || '') + (role || ''))}-${index}`;
-            parentContainer.setAttribute('data-tracker-id', id);
-            el.setAttribute('data-tracker-id', id);
-          }
+          id = `tracker-${role || 'turn'}-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
+          elementIdMap.set(parentContainer, id);
+          elementIdMap.set(el, id);
         }
       }
 
@@ -159,16 +144,11 @@ export class VisibleDOMStrategy implements AcquisitionStrategy {
         rejectReason = 'duplicate ID';
       }
 
-      // Check if it's a streaming placeholder (e.g., blinking cursor without real text)
       if (!rejectReason && el.querySelector('.result-streaming') && text && text.length < 2) {
         rejectReason = 'streaming placeholder';
       }
 
       if (rejectReason) {
-        if (isChatGPT) {
-          console.log(`Rejected [Node ${index}]: ${rejectReason}`);
-        }
-        rejectedOlderMessages++; // Keep a loose count
         return;
       }
 
@@ -176,44 +156,7 @@ export class VisibleDOMStrategy implements AcquisitionStrategy {
       messages.push({ id, role: role as MessageRole, text: text as string });
     });
 
-    if (isChatGPT) {
-      if (messages.length > 0) {
-        const first = messages[0];
-        const last = messages[messages.length - 1];
-        console.log(
-          `\nFIRST visible message: [${first.role}] ${first.text.substring(0, 50).replace(/\n/g, ' ')}...`
-        );
-        console.log(
-          `LAST visible message: [${last.role}] ${last.text.substring(0, 50).replace(/\n/g, ' ')}...`
-        );
-
-        // Is first visible also the first chronological?
-        // ChatGPT usually has no marker, but if there's no older rejected nodes and it's the top node in the list, it might be.
-        const firstChronological =
-          rejectedOlderMessages === 0 &&
-          document.querySelector('.conversation-turn') === elements[0];
-        console.log(
-          `First visible message is first chronological message: ${firstChronological ? 'YES' : 'UNKNOWN'}`
-        );
-      } else {
-        console.log(`\nFIRST visible message: NONE`);
-        console.log(`LAST visible message: NONE`);
-      }
-
-      console.log(
-        `\nOlder messages exist in the DOM but were rejected: ${rejectedOlderMessages > 0 ? 'YES' : 'NO'}`
-      );
-
-      if (messages.length <= 5 && messages.length > 0) {
-        console.log(`\n[EXPLANATION] Why only ${messages.length} messages are available:`);
-        console.log(
-          `ChatGPT heavily virtualizes its DOM. Older messages are physically removed from the Document Object Model to save memory when scrolling down. querySelectorAll can only 'see' the nodes currently attached to the viewport.`
-        );
-      }
-
-      console.groupEnd();
-    }
-
+    logger.debug(`[VisibleDOMStrategy] Extracted ${messages.length} visible DOM messages.`);
     return messages;
   }
 }

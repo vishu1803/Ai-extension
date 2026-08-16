@@ -26,6 +26,9 @@ export default defineConfig({
     },
   },
   srcDir: 'src',
+  runner: {
+    disabled: true,
+  },
   vite: () => ({
     plugins: [preact(), tailwindcss()],
     resolve: {

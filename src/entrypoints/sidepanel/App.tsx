@@ -17,13 +17,6 @@ import {
 type Tab = 'dashboard' | 'summary' | 'history' | 'settings';
 
 export function App() {
-  useEffect(() => {
-    console.log('[SidePanel] Panel mounted');
-    return () => console.log('[SidePanel] Component unmounted');
-  }, []);
-  
-  console.log('[SidePanel] React rerender');
-
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const status = useAppState((s) => s.status);
   const tokenEstimate = useAppState((s) => s.tokenEstimate);
@@ -76,8 +69,10 @@ export function App() {
 
                 <div className="mt-6 flex flex-col items-center gap-3 w-full">
                   <span className="text-[13px] text-[#a1a1aa]">
-                    {tokenEstimate.count.toLocaleString()} / {stats.contextLimit.toLocaleString()}{' '}
-                    tokens
+                    <span className="text-white font-semibold">
+                      {tokenEstimate.count.toLocaleString()}
+                    </span>{' '}
+                    / {stats.contextLimit.toLocaleString()} tokens
                   </span>
                   <div className="mb-2 scale-90">
                     <PlatformBadge platform={platform} />

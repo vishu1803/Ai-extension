@@ -9,45 +9,45 @@ describe('APIStrategy', () => {
   const mockAdapter = {
     id: 'chatgpt',
     domSelectors: ['article'],
-    observeSelector: 'main'
+    observeSelector: 'main',
   };
 
   const mockChatGPTResponse = {
     id: 'test-conversation-id',
     mapping: {
-      'node_1': {
+      node_1: {
         id: 'node_1',
         message: {
           id: 'msg_1',
           author: { role: 'user' },
           content: { parts: ['Hello, how are you?'] },
-          create_time: 1000
-        }
+          create_time: 1000,
+        },
       },
-      'node_2': {
+      node_2: {
         id: 'node_2',
         message: {
           id: 'msg_2',
           author: { role: 'assistant' },
           content: { parts: ['I am doing well, thank you!'] },
-          create_time: 2000
-        }
+          create_time: 2000,
+        },
       },
-      'node_3': {
+      node_3: {
         id: 'node_3',
         message: {
           id: 'msg_3',
           author: { role: 'user' },
           content: { parts: ['That is great to hear.'] },
-          create_time: 3000
-        }
-      }
-    }
+          create_time: 3000,
+        },
+      },
+    },
   };
 
   beforeEach(() => {
-    strategy = new APIStrategy(mockAdapter as any);
-    
+    strategy = new APIStrategy(mockAdapter as any, true);
+
     // Mock global fetch
     fetchSpy = vi.fn();
     global.fetch = fetchSpy;
@@ -74,7 +74,7 @@ describe('APIStrategy', () => {
     it('should successfully fetch and normalize conversation', async () => {
       const mockResponse = new Response(JSON.stringify(mockChatGPTResponse), {
         status: 200,
-        headers: { 'content-type': 'application/json' }
+        headers: { 'content-type': 'application/json' },
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -85,7 +85,7 @@ describe('APIStrategy', () => {
       expect(result.success).toBe(true);
       expect(result.isComplete).toBe(true);
       expect(result.messages).toHaveLength(3);
-      
+
       // Verify order preservation (sorted by create_time)
       expect(result.messages[0].role).toBe('user');
       expect(result.messages[0].text).toBe('Hello, how are you?');
@@ -98,7 +98,7 @@ describe('APIStrategy', () => {
         expect.objectContaining({
           state: 'SUCCESS',
           currentStrategy: 'API',
-          messagesFound: 3
+          messagesFound: 3,
         })
       );
 
@@ -108,8 +108,8 @@ describe('APIStrategy', () => {
         expect.objectContaining({
           method: 'GET',
           headers: expect.objectContaining({
-            'Accept': 'application/json'
-          })
+            Accept: 'application/json',
+          }),
         })
       );
     });
@@ -117,7 +117,7 @@ describe('APIStrategy', () => {
     it('should return error on HTTP 404', async () => {
       const mockResponse = new Response(null, {
         status: 404,
-        statusText: 'Not Found'
+        statusText: 'Not Found',
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -133,7 +133,7 @@ describe('APIStrategy', () => {
     it('should return error on HTTP 401 Unauthorized', async () => {
       const mockResponse = new Response(null, {
         status: 401,
-        statusText: 'Unauthorized'
+        statusText: 'Unauthorized',
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -146,7 +146,7 @@ describe('APIStrategy', () => {
     it('should return error on HTTP 403 Forbidden', async () => {
       const mockResponse = new Response(null, {
         status: 403,
-        statusText: 'Forbidden'
+        statusText: 'Forbidden',
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -179,7 +179,7 @@ describe('APIStrategy', () => {
     it('should handle JSON parsing errors', async () => {
       const mockResponse = new Response('invalid json', {
         status: 200,
-        headers: { 'content-type': 'application/json' }
+        headers: { 'content-type': 'application/json' },
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -193,7 +193,7 @@ describe('APIStrategy', () => {
     it('should handle empty conversation', async () => {
       const mockResponse = new Response(JSON.stringify({ mapping: {} }), {
         status: 200,
-        headers: { 'content-type': 'application/json' }
+        headers: { 'content-type': 'application/json' },
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -206,28 +206,28 @@ describe('APIStrategy', () => {
     it('should skip system messages', async () => {
       const responseWithSystem = {
         mapping: {
-          'node_1': {
+          node_1: {
             message: {
               id: 'msg_1',
               author: { role: 'user' },
               content: { parts: ['Hello'] },
-              create_time: 1000
-            }
+              create_time: 1000,
+            },
           },
-          'node_2': {
+          node_2: {
             message: {
               id: 'msg_2',
               author: { role: 'system' },
               content: { parts: ['System message'] },
-              create_time: 2000
-            }
-          }
-        }
+              create_time: 2000,
+            },
+          },
+        },
       };
 
       const mockResponse = new Response(JSON.stringify(responseWithSystem), {
         status: 200,
-        headers: { 'content-type': 'application/json' }
+        headers: { 'content-type': 'application/json' },
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -241,36 +241,36 @@ describe('APIStrategy', () => {
     it('should skip messages without content', async () => {
       const responseWithEmpty = {
         mapping: {
-          'node_1': {
+          node_1: {
             message: {
               id: 'msg_1',
               author: { role: 'user' },
               content: { parts: ['Hello'] },
-              create_time: 1000
-            }
+              create_time: 1000,
+            },
           },
-          'node_2': {
+          node_2: {
             message: {
               id: 'msg_2',
               author: { role: 'assistant' },
-              content: { parts: [] },  // Empty parts
-              create_time: 2000
-            }
+              content: { parts: [] }, // Empty parts
+              create_time: 2000,
+            },
           },
-          'node_3': {
+          node_3: {
             message: {
               id: 'msg_3',
               author: { role: 'user' },
-              content: { parts: [''] },  // Whitespace only
-              create_time: 3000
-            }
-          }
-        }
+              content: { parts: [''] }, // Whitespace only
+              create_time: 3000,
+            },
+          },
+        },
       };
 
       const mockResponse = new Response(JSON.stringify(responseWithEmpty), {
         status: 200,
-        headers: { 'content-type': 'application/json' }
+        headers: { 'content-type': 'application/json' },
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -284,24 +284,24 @@ describe('APIStrategy', () => {
     it('should handle nodes without messages field', async () => {
       const responseWithMissingMessage = {
         mapping: {
-          'node_1': {
-            id: 'node_1'
+          node_1: {
+            id: 'node_1',
             // No message field
           },
-          'node_2': {
+          node_2: {
             message: {
               id: 'msg_2',
               author: { role: 'assistant' },
               content: { parts: ['Hi there'] },
-              create_time: 2000
-            }
-          }
-        }
+              create_time: 2000,
+            },
+          },
+        },
       };
 
       const mockResponse = new Response(JSON.stringify(responseWithMissingMessage), {
         status: 200,
-        headers: { 'content-type': 'application/json' }
+        headers: { 'content-type': 'application/json' },
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -315,20 +315,20 @@ describe('APIStrategy', () => {
     it('should handle multipart content', async () => {
       const responseWithMultipart = {
         mapping: {
-          'node_1': {
+          node_1: {
             message: {
               id: 'msg_1',
               author: { role: 'user' },
               content: { parts: ['Part 1', 'Part 2', 'Part 3'] },
-              create_time: 1000
-            }
-          }
-        }
+              create_time: 1000,
+            },
+          },
+        },
       };
 
       const mockResponse = new Response(JSON.stringify(responseWithMultipart), {
         status: 200,
-        headers: { 'content-type': 'application/json' }
+        headers: { 'content-type': 'application/json' },
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -349,14 +349,14 @@ describe('APIStrategy', () => {
             id: `msg_${i}`,
             author: { role },
             content: { parts: [`Message ${i}`] },
-            create_time: i * 1000
-          }
+            create_time: i * 1000,
+          },
         };
       }
 
       const mockResponse = new Response(JSON.stringify({ mapping: largeMapping }), {
         status: 200,
-        headers: { 'content-type': 'application/json' }
+        headers: { 'content-type': 'application/json' },
       });
       fetchSpy.mockResolvedValue(mockResponse);
 
@@ -365,7 +365,7 @@ describe('APIStrategy', () => {
       expect(result.success).toBe(true);
       expect(result.messages).toHaveLength(100);
       expect(result.isComplete).toBe(true);
-      
+
       // Verify order
       for (let i = 0; i < 100; i++) {
         expect(result.messages[i].text).toBe(`Message ${i}`);

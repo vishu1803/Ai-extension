@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { AppState } from '../../shared/types';
 import { storageLayer, defaultState } from '../../storage';
 import { messaging } from '../../messaging/client';
+import { logger } from '../../shared/logger';
 
 interface AppStore extends AppState {
   setTheme: (theme: AppState['theme']) => void;
@@ -14,7 +15,6 @@ interface AppStore extends AppState {
   init: () => void;
 }
 
-// Connected state
 export const useAppState = create<AppStore>((set, get) => ({
   ...defaultState,
 
@@ -31,10 +31,9 @@ export const useAppState = create<AppStore>((set, get) => ({
     await storageLayer.updateAppState({ status });
   },
   setTokenCount: async (count) => {
-    set((state) => ({ tokenEstimate: { ...state.tokenEstimate, count } }));
     await messaging.sendToBackground({
       type: 'UPDATE_TOKEN_COUNT',
-      payload: { count, platform: get().platform || 'chatgpt' }
+      payload: { count, platform: get().platform || 'chatgpt' },
     });
   },
   toggleWidget: async () => {
@@ -50,33 +49,14 @@ export const useAppState = create<AppStore>((set, get) => ({
     await messaging.sendToBackground({ type: 'OPEN_SIDE_PANEL' });
   },
   init: () => {
-    // 1. Initial load from storage
     storageLayer.appState.getValue().then((state) => {
-      console.log(`[UI] Initial state loaded. Tokens: ${state.tokenEstimate.count}, Status: ${state.status}`);
+      logger.debug(`[UI] Initial state loaded. Tokens: ${state.tokenEstimate.count}`);
       set({ ...state });
     });
 
-    // 2. Watch for changes across contexts
     storageLayer.watchAppState((newState) => {
-      if (newState) {
-        console.log(`[SidePanel] Storage changed via storage sync.`);
-        
-        // Check what changed
-        const currentTokens = get().tokenEstimate.count;
-        if (newState.tokenEstimate.count !== currentTokens) {
-          console.log(`[SidePanel] Context updated (Tokens changed: ${currentTokens} -> ${newState.tokenEstimate.count})`);
-        }
-        
-        const currentSummary = get().currentSummary;
-        if (newState.currentSummary && currentSummary && newState.currentSummary.lastUpdatedAt !== currentSummary.lastUpdatedAt) {
-          console.log(`[SidePanel] Summary updated.`);
-        }
-
-        console.log(`[UI] State updated via storage sync. Tokens: ${newState.tokenEstimate.count}, Status: ${newState.status}`);
-        set({ ...newState });
-      }
+      if (!newState) return;
+      set({ ...newState });
     });
-  }
+  },
 }));
-
-

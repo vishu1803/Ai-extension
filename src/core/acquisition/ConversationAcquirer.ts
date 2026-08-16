@@ -1,11 +1,11 @@
 import { PlatformId } from '../../shared/types';
-import { NetworkHistoryStore } from './strategies/NetworkInterceptStrategy';
 import {
   AcquisitionResult,
   AcquisitionStatus,
   ConversationAcquirerInterface,
   AcquisitionStrategy,
 } from './types';
+import { logger, DEBUG_TRACKER } from '../../shared/logger';
 
 export class ConversationAcquirer implements ConversationAcquirerInterface {
   private strategies: AcquisitionStrategy[] = [];
@@ -21,7 +21,7 @@ export class ConversationAcquirer implements ConversationAcquirerInterface {
   }
 
   public async acquire(threadId: string, platform: PlatformId): Promise<AcquisitionResult> {
-    this.cancel(); // Cancel any ongoing acquisition
+    this.cancel();
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
 
@@ -34,7 +34,6 @@ export class ConversationAcquirer implements ConversationAcquirerInterface {
     };
 
     let totalMessagesFound = 0;
-    let directApiAttempted = false;
 
     const notifyStatus = (status: AcquisitionStatus) => {
       this.statusListeners.forEach((listener) => listener(status));
@@ -42,28 +41,15 @@ export class ConversationAcquirer implements ConversationAcquirerInterface {
 
     notifyStatus({ state: 'ACQUIRING', messagesFound: 0 });
 
-    console.group(`[History Acquisition] Started for Conversation: ${threadId}`);
-
-    let selectedStrategy: string = 'None (All Failed)';
-
     try {
-      // In a real implementation, we would fetch the PlatformCapability and sort the strategies.
-      // For Phase 1, we just run the registered strategies in order.
       for (const strategy of this.strategies) {
         if (signal.aborted) {
           notifyStatus({ state: 'ABORTED', messagesFound: totalMessagesFound });
-          return result; // return last failed/partial result
+          return result;
         }
 
-        if (!strategy.canExecute(platform)) {
-          console.log(
-            `\n[Strategy] ${strategy.type}:\nFAILED\nReason: canExecute() returned false (Adapter does not support this strategy or it already ran).`
-          );
+        if (!strategy.canExecute(platform, threadId)) {
           continue;
-        }
-
-        if (strategy.type === 'API') {
-          directApiAttempted = true;
         }
 
         notifyStatus({
@@ -82,15 +68,10 @@ export class ConversationAcquirer implements ConversationAcquirerInterface {
           });
 
           if (stratResult.success && stratResult.messages.length > 0) {
-            console.log(
-              `\n[Strategy] ${strategy.type}:\nSUCCESS\nMessages: ${stratResult.messages.length}`
-            );
             result = stratResult;
             totalMessagesFound = Math.max(totalMessagesFound, stratResult.messages.length);
-            selectedStrategy = strategy.type;
 
-            if (stratResult.isComplete) {
-              // We successfully got the full history
+            if (stratResult.isComplete || strategy.type === 'NETWORK_INTERCEPT') {
               notifyStatus({
                 state: 'SUCCESS',
                 currentStrategy: strategy.type,
@@ -98,41 +79,30 @@ export class ConversationAcquirer implements ConversationAcquirerInterface {
               });
               break;
             }
-          } else {
-            console.log(
-              `\n[Strategy] ${strategy.type}:\nFAILED\nReason: ${stratResult.error?.message || 'Returned 0 messages.'}`
-            );
           }
         } catch (err) {
-          console.log(`\n[Strategy] ${strategy.type}:\nFAILED\nReason: ${(err as Error).message}`);
+          logger.debug(`Strategy ${strategy.type} failed:`, err);
         }
       }
 
-      if (result.success) {
+      if (result.success && totalMessagesFound > 0) {
         notifyStatus({ state: 'SUCCESS', messagesFound: totalMessagesFound });
+        if (DEBUG_TRACKER) {
+          console.log(
+            `[ACQUISITION]\n` +
+              `conversationId=${threadId}\n` +
+              `networkHistoryAvailable=${result.strategy === 'NETWORK_INTERCEPT'}\n` +
+              `selectedStrategy=${result.strategy}\n` +
+              `directApiAttempted=${result.strategy !== 'NETWORK_INTERCEPT'}`
+          );
+          console.log(
+            `[TRACE:HISTORY_ACQUIRED]\nconversationId=${threadId}\nmessages=${totalMessagesFound}`
+          );
+        }
       } else {
         notifyStatus({ state: 'FAILED', messagesFound: totalMessagesFound });
       }
 
-      const hasNetworkHistory = NetworkHistoryStore.has(threadId);
-      const storedNetHistory = NetworkHistoryStore.get(threadId);
-      const netMsgCount = storedNetHistory ? storedNetHistory.messages.length : 0;
-
-      console.log(
-        `\n[History Acquisition]\n` +
-          `Strategy selected: ${selectedStrategy}\n` +
-          `Messages acquired: ${totalMessagesFound}\n` +
-          `[VERIFY:ACQUISITION_ROUTING]\n` +
-          `conversationId=${threadId}\n` +
-          `networkHistoryAvailable=${hasNetworkHistory}\n` +
-          `networkHistoryMessageCount=${netMsgCount}\n` +
-          `selectedStrategy=${selectedStrategy}\n` +
-          `directApiAttempted=${directApiAttempted}\n` +
-          `[VERIFY:ACQUIRER]\n` +
-          `conversationId=${threadId}\n` +
-          `messages=${totalMessagesFound}`
-      );
-      console.groupEnd();
       return result;
     } finally {
       this.abortController = null;

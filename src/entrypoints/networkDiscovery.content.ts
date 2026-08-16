@@ -8,152 +8,100 @@ export default defineContentScript({
     if ((window as any).__chatgpt_network_discovery_injected) return;
     (window as any).__chatgpt_network_discovery_injected = true;
 
-    console.log('%c[Network Discovery] Interceptor active on page (MAIN world entrypoint).', 'color: #10b981; font-weight: bold;');
+    // Match ChatGPT conversation API endpoints (with or without query params)
+    const CONVERSATION_URL_PATTERN = /\/backend-api\/conversation\/[a-f0-9-]+/i;
 
-    let currentTrigger = 'INITIAL_LOAD';
-    let candidateIndex = 0;
-
-    window.addEventListener('popstate', () => { currentTrigger = 'NAVIGATION'; });
-    window.addEventListener('locationchange', () => { currentTrigger = 'NAVIGATION'; });
-
-    document.addEventListener('click', (e) => {
-      const target = e.target as HTMLElement;
-      if (target && target.closest && (target.closest('a') || target.closest('nav') || target.closest('[data-testid*="sidebar"]'))) {
-        currentTrigger = 'SIDEBAR_CLICK';
-      }
-    }, true);
-
-    document.addEventListener('scroll', (e) => {
-      const target = e.target as HTMLElement;
-      if (target && target.scrollTop < 50) {
-        currentTrigger = 'SCROLL_UP';
-      }
-    }, true);
-
-    const FILTER_KEYWORDS = ['conversation', 'messages', 'history', 'backend-api', '/api/'];
-
-    function isCandidate(url: string) {
+    function isConversationEndpoint(url: string): boolean {
       if (!url) return false;
+      // Skip telemetry/analytics
       const lower = url.toLowerCase();
-      if (lower.includes('sentry') || lower.includes('telemetry') || lower.includes('amplitude') || lower.includes('datadog')) return false;
-      return FILTER_KEYWORDS.some(kw => lower.includes(kw));
+      if (
+        lower.includes('sentry') ||
+        lower.includes('telemetry') ||
+        lower.includes('amplitude') ||
+        lower.includes('datadog')
+      )
+        return false;
+      return CONVERSATION_URL_PATTERN.test(url);
     }
 
-    function processCandidate(metadata: any) {
-      candidateIndex++;
-      console.log(`
-=== CHATGPT HISTORY REQUEST DISCOVERY ===
-Candidate #${candidateIndex}
-URL: ${metadata.url}
-METHOD: ${metadata.method}
-STATUS: ${metadata.status}
-TRIGGER: ${metadata.trigger}
-CONTENT-TYPE: ${metadata.contentType}
-RESPONSE SIZE: ${metadata.responseSize} bytes
-TOP LEVEL KEYS: ${metadata.topLevelKeys.join(', ')}
-PAYLOAD KEYS: ${metadata.payloadKeys.join(', ')}
-CONTAINS MESSAGE HISTORY: ${metadata.hasMessageHistory ? 'YES' : 'NO'}
-Structural Keys Found: mapping=${metadata.hasMapping}, messages=${metadata.hasMessages}, current_node=${metadata.hasCurrentNode}, conversation_id=${metadata.hasConversationId}
-      `);
-    }
+    let lastProcessedKey = '';
 
-    async function inspectResponseBody(url: string, method: string, status: number, contentType: string, bodyText: string, requestPayload: any) {
-      let topLevelKeys: string[] = [];
-      let hasMapping = false;
-      let hasMessages = false;
-      let hasCurrentNode = false;
-      let hasConversationId = false;
-      let hasMessageHistory = false;
-      let payloadKeys: string[] = [];
+    function processResponseBody(url: string, status: number, bodyText: string) {
+      if (status !== 200 || !bodyText) return;
 
-      if (requestPayload) {
-        try {
-          const parsedReq = JSON.parse(requestPayload);
-          if (parsedReq && typeof parsedReq === 'object') {
-            payloadKeys = Object.keys(parsedReq);
+      try {
+        // Single JSON.parse — no double-parsing
+        const data = JSON.parse(bodyText);
+        if (!data || typeof data !== 'object' || Array.isArray(data)) return;
+
+        const hasMapping = 'mapping' in data;
+        const hasConversationId = 'conversation_id' in data;
+
+        if (hasMapping && hasConversationId) {
+          const rawNodes =
+            typeof data.mapping === 'object' && data.mapping !== null
+              ? Object.keys(data.mapping).length
+              : 0;
+          const currentNode = data.current_node || '';
+          const processKey = `${data.conversation_id}_${rawNodes}_${currentNode}`;
+
+          if (processKey === lastProcessedKey) {
+            return;
           }
-        } catch(e) {}
-      }
+          lastProcessedKey = processKey;
 
-      if (bodyText) {
-        try {
-          const data = JSON.parse(bodyText);
-          if (data && typeof data === 'object' && !Array.isArray(data)) {
-            topLevelKeys = Object.keys(data);
-            hasMapping = 'mapping' in data;
-            hasMessages = 'messages' in data;
-            hasCurrentNode = 'current_node' in data;
-            hasConversationId = 'conversation_id' in data;
-            hasMessageHistory = hasMapping || (hasMessages && Array.isArray(data.messages) && data.messages.length > 0);
-          } else if (Array.isArray(data)) {
-            topLevelKeys = ['[Array]'];
-            if (data.length > 0 && typeof data[0] === 'object' && data[0] !== null) {
-              topLevelKeys = [`[Array of ${data.length} items]`, ...Object.keys(data[0])];
-            }
-          }
-        } catch(e) {}
-      }
+          // Push to pending queue in window so content script can process if registered later
+          (window as any).__CTXTRACKER_PENDING_NETWORK_CONVERSATIONS__ =
+            (window as any).__CTXTRACKER_PENDING_NETWORK_CONVERSATIONS__ || [];
+          (window as any).__CTXTRACKER_PENDING_NETWORK_CONVERSATIONS__.push({
+            url,
+            conversationId: data.conversation_id,
+            mapping: data.mapping,
+            currentNode: data.current_node || null,
+          });
 
-      processCandidate({
-        url,
-        method,
-        status,
-        trigger: currentTrigger,
-        contentType: contentType || 'unknown',
-        responseSize: bodyText ? bodyText.length : 0,
-        topLevelKeys,
-        payloadKeys,
-        hasMapping,
-        hasMessages,
-        hasCurrentNode,
-        hasConversationId,
-        hasMessageHistory
-      });
-
-      // Bridge: Forward successful conversation responses to the ISOLATED content script
-      // via window.postMessage. The ISOLATED world cannot intercept page fetches but
-      // shares the window message event bus with the MAIN world.
-      if (status === 200 && hasMapping && hasConversationId && bodyText) {
-        try {
-          const data = JSON.parse(bodyText);
-          window.postMessage({
-            type: '__CTXTRACKER_NETWORK_CONVERSATION__',
-            payload: {
-              url,
-              conversationId: data.conversation_id,
-              mapping: data.mapping,
-              currentNode: data.current_node || null,
-            }
-          }, '*');
-          console.log(`%c[Network Discovery] Bridged conversation ${data.conversation_id} to content script (${Object.keys(data.mapping).length} nodes)`, 'color: #10b981;');
-        } catch (bridgeErr) {
-          console.warn('[Network Discovery] Failed to bridge conversation data:', bridgeErr);
+          // Post message to ISOLATED content script window
+          window.postMessage(
+            {
+              type: '__CTXTRACKER_NETWORK_CONVERSATION__',
+              payload: {
+                url,
+                conversationId: data.conversation_id,
+                mapping: data.mapping,
+                currentNode: data.current_node || null,
+              },
+            },
+            '*'
+          );
         }
+      } catch {
+        // Skip malformed responses
       }
-
-      setTimeout(() => { currentTrigger = 'IDLE'; }, 1000);
     }
 
     // Intercept window.fetch
     const originalFetch = window.fetch;
-    window.fetch = async function(...args) {
+    window.fetch = async function (...args) {
       const resource = args[0];
-      const config = args[1] || {};
-      const url = typeof resource === 'string' ? resource : (resource && (resource as Request).url ? (resource as Request).url : '');
-      const method = config.method || (resource && (resource as Request).method ? (resource as Request).method : 'GET');
+      const url =
+        typeof resource === 'string'
+          ? resource
+          : resource && (resource as Request).url
+            ? (resource as Request).url
+            : '';
 
       const response = await originalFetch.apply(this, args);
 
-      if (isCandidate(url)) {
+      if (isConversationEndpoint(url)) {
+        if ((window as any).__TRACKER_PERF_MODE__ === 'DISABLED') {
+          return response;
+        }
         try {
           const clone = response.clone();
           const bodyText = await clone.text();
-          const contentType = response.headers.get('content-type') || '';
-          const requestPayload = config.body || null;
-          inspectResponseBody(url, method, response.status, contentType, bodyText, requestPayload);
-        } catch(e) {
-          console.warn('[Network Discovery] Error reading fetch clone:', e);
-        }
+          processResponseBody(url, response.status, bodyText);
+        } catch {}
       }
 
       return response;
@@ -163,18 +111,15 @@ Structural Keys Found: mapping=${metadata.hasMapping}, messages=${metadata.hasMe
     const originalOpen = XMLHttpRequest.prototype.open;
     const originalSend = XMLHttpRequest.prototype.send;
 
-    XMLHttpRequest.prototype.open = function(this: any, method: string, url: string) {
+    XMLHttpRequest.prototype.open = function (this: any, method: string, url: string) {
       this._nd_url = url;
-      this._nd_method = method;
       return originalOpen.apply(this, arguments as any);
     };
 
-    XMLHttpRequest.prototype.send = function(this: any, body?: any) {
-      this._nd_body = body;
-      this.addEventListener('load', function(this: any) {
-        if (isCandidate(this._nd_url)) {
-          const contentType = this.getResponseHeader('content-type') || '';
-          inspectResponseBody(this._nd_url, this._nd_method, this.status, contentType, this.responseText, this._nd_body);
+    XMLHttpRequest.prototype.send = function (this: any, body?: any) {
+      this.addEventListener('load', function (this: any) {
+        if (isConversationEndpoint(this._nd_url)) {
+          processResponseBody(this._nd_url, this.status, this.responseText);
         }
       });
       return originalSend.apply(this, arguments as any);

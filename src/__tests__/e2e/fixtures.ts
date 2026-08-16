@@ -9,7 +9,7 @@ export const test = base.extend<{
   context: BrowserContext;
   extensionId: string;
 }>({
-  context: async ({}, use) => {
+  context: async (_args, use) => {
     const pathToExtension = extensionPath;
     const context = await chromium.launchPersistentContext('', {
       headless: false, // Chrome extensions require headful mode
@@ -18,13 +18,13 @@ export const test = base.extend<{
         `--load-extension=${pathToExtension}`,
       ],
     });
-    
+
     // Wait for extension background to initialize (if not already spawned)
-    let [sw] = context.serviceWorkers();
+    const [sw] = context.serviceWorkers();
     if (!sw) {
       await context.waitForEvent('serviceworker');
     }
-    
+
     await use(context);
     await context.close();
   },

@@ -1,5 +1,8 @@
 import { ChatMessage, MessageRole } from '../models';
 
+// Memoization cache for normalized ChatGPT mapping payloads
+const normalizedMappingCache = new Map<string, { key: string; messages: ChatMessage[] }>();
+
 /**
  * Normalize ChatGPT's API response (containing a `mapping` object) into a
  * chronologically sorted ChatMessage[].
@@ -25,20 +28,31 @@ import { ChatMessage, MessageRole } from '../models';
  * This function is shared by APIStrategy and the network intercept bridge.
  */
 export function normalizeChatGPTMapping(data: unknown): ChatMessage[] {
-  const messages: ChatMessage[] = [];
-
   if (!data || typeof data !== 'object') {
-    return messages;
+    return [];
   }
 
   const record = data as Record<string, unknown>;
   const mapping = record.mapping;
 
   if (!mapping || typeof mapping !== 'object') {
-    return messages;
+    return [];
   }
 
   const mappingObj = mapping as Record<string, Record<string, unknown>>;
+  const nodeCount = Object.keys(mappingObj).length;
+  const conversationId =
+    (record.conversation_id as string) || (record.conversationId as string) || '';
+  const currentNode = (record.current_node as string) || (record.currentNode as string) || '';
+
+  // Cache key based on conversationId, node count, and current_node
+  const cacheKey = `${conversationId}_${nodeCount}_${currentNode}`;
+  if (conversationId && normalizedMappingCache.has(conversationId)) {
+    const cached = normalizedMappingCache.get(conversationId);
+    if (cached && cached.key === cacheKey) {
+      return cached.messages;
+    }
+  }
 
   // Collect entries with timestamps for sorting
   const messageEntries: Array<{ msg: Record<string, unknown>; time: number }> = [];
@@ -65,6 +79,8 @@ export function normalizeChatGPTMapping(data: unknown): ChatMessage[] {
   // Sort by creation time to preserve conversation order
   messageEntries.sort((a, b) => a.time - b.time);
 
+  const messages: ChatMessage[] = [];
+
   // Extract messages
   for (const entry of messageEntries) {
     try {
@@ -88,7 +104,12 @@ export function normalizeChatGPTMapping(data: unknown): ChatMessage[] {
       let text = '';
       const content = msg.content as Record<string, unknown> | string | undefined;
 
-      if (content && typeof content === 'object' && 'parts' in content && Array.isArray(content.parts)) {
+      if (
+        content &&
+        typeof content === 'object' &&
+        'parts' in content &&
+        Array.isArray(content.parts)
+      ) {
         text = (content.parts as unknown[])
           .filter((part: unknown) => typeof part === 'string')
           .join('\n');
@@ -109,6 +130,10 @@ export function normalizeChatGPTMapping(data: unknown): ChatMessage[] {
       // Skip messages that fail to parse
       continue;
     }
+  }
+
+  if (conversationId) {
+    normalizedMappingCache.set(conversationId, { key: cacheKey, messages });
   }
 
   return messages;

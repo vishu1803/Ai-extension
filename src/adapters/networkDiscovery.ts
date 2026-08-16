@@ -26,12 +26,6 @@ export function injectNetworkDiscoveryScript() {
       }
     }, true);
 
-    document.addEventListener('scroll', (e) => {
-      if (e.target && e.target.scrollTop < 50) {
-        currentTrigger = 'SCROLL_UP';
-      }
-    }, true);
-
     const FILTER_KEYWORDS = ['conversation', 'messages', 'history', 'backend-api', '/api/'];
 
     function isCandidate(url) {

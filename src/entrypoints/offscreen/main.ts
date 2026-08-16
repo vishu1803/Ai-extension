@@ -11,11 +11,30 @@ function getEngine(platformId: string, maxContext: number): TokenEngine {
   return tokenEngines[platformId];
 }
 
-browser.runtime.onMessage.addListener(((message: ExtensionMessage, sender: any, sendResponse: any) => {
+browser.runtime.onMessage.addListener(((
+  message: ExtensionMessage,
+  sender: any,
+  sendResponse: any
+) => {
   if (message.type === 'TOKENIZE_REQUEST') {
-    const { platformId, maxContext, messages } = message.payload;
+    const { jobContext, platformId, maxContext, messages } = message.payload;
     const engine = getEngine(platformId, maxContext);
-    engine.estimateConversation(messages).then(sendResponse).catch(console.error);
+    engine
+      .estimateConversation(messages)
+      .then((estimate) => {
+        sendResponse({
+          jobContext,
+          estimate,
+        });
+      })
+      .catch((err) => {
+        console.error('[Offscreen] Tokenization error:', err);
+        sendResponse({
+          jobContext,
+          error: String(err),
+          estimate: { totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, confidence: 0 },
+        });
+      });
     return true; // Keep the message channel open for the async response
   }
 }) as any);

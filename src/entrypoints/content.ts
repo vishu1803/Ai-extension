@@ -4,10 +4,10 @@ import { detectPlatform } from '../adapters';
 import { RobustDOMEngine } from '../adapters/engine';
 import { messaging } from '../messaging/client';
 import { storageLayer } from '../storage';
-import { normalizeChatGPTMapping } from '../core/acquisition/normalizeMapping';
-import { NetworkHistoryStore } from '../core/acquisition/strategies/NetworkInterceptStrategy';
-import { DOMObservation } from '../core/models';
+import { logger } from '../shared/logger';
 import '../ui/styles/tailwind.css';
+
+import { getTrackerPerfMode, perfMetrics } from '../shared/perfMode';
 
 export default defineContentScript({
   matches: [
@@ -16,213 +16,152 @@ export default defineContentScript({
     '*://chat.openai.com/*',
     '*://claude.ai/*',
     '*://gemini.google.com/*',
-    '*://*.x.com/*',
-    '*://*.grok.com/*',
-    '*://*.perplexity.ai/*',
+    '*://grok.com/*',
+    '*://x.com/i/grok*',
   ],
+  runAt: 'document_idle',
   cssInjectionMode: 'ui',
   async main(ctx) {
-    console.log(`[Startup] AI Context Tracker: Content Script injected on ${window.location.href}`);
+    const perfMode = getTrackerPerfMode();
+    if (perfMode === 'DISABLED') {
+      logger.debug('[Startup] Extension disabled by TRACKER_PERF_MODE=DISABLED');
+      return;
+    }
+
+    logger.debug(`[Startup] Content Script injected on ${window.location.href} (mode=${perfMode})`);
+
+    // Clean up any previously running engine from an older content script instance
+    if ((window as any).__ACTIVE_ROBUST_DOM_ENGINE__) {
+      try {
+        (window as any).__ACTIVE_ROBUST_DOM_ENGINE__.dispose();
+      } catch (_) {}
+      (window as any).__ACTIVE_ROBUST_DOM_ENGINE__ = null;
+    }
 
     const url = new URL(window.location.href);
     const adapter = detectPlatform(url);
 
     if (adapter) {
+      logger.tracker('CONTENT_SCRIPT_STARTED', {
+        platform: adapter.id,
+        url: window.location.href,
+      });
+      logger.tracker('PLATFORM_DETECTED', adapter.id);
+
       let state;
       try {
         state = await storageLayer.appState.getValue();
       } catch (error) {
-        console.warn(
-          '[Startup] Failed to access storage (context restricted). Falling back to default tracking state.',
+        logger.warn(
+          'Failed to access storage (context restricted). Falling back to default tracking state.',
           error
         );
-        // Default state fallback guarantees the tracker and observer always start
         const { defaultState } = await import('../storage');
         state = defaultState;
       }
 
       if (!state.trackingEnabled || !state.supportedPlatforms[adapter.id]) {
-        console.log(`[Startup] Tracking disabled for ${adapter.name}. Observer not started.`);
+        logger.debug(`[Startup] Tracking disabled for ${adapter.name}. Observer not started.`);
         return;
       }
 
-      console.log(`[Startup] Detected Platform: ${adapter.name}. Initializing engine.`);
-
-      // Initialize Robust DOM Engine (Stateless telemetry observer)
-      const engine = new RobustDOMEngine(adapter, (observation) => {
-        console.log(
-          `[Observer] Emitting ${observation.messages.length} visible messages for ${observation.platform}`
-        );
-
-        // Send the raw DOM observation to Background Service Worker (the source of truth)
-        messaging
-          .sendToBackground<{
-            conversationId?: string;
-            canonicalMessageCount?: number;
-            storedMessageCount?: number;
-            turns?: number;
-            tokens?: number;
-          }>({
-            type: 'CONTENT_MUTATION',
-            payload: observation,
-          })
-          .then((res) => {
-            const data = res?.data;
-            if (data) {
-              console.log(
-                `[VERIFY:CONVERSATION_MANAGER]\n` +
-                  `conversationId=${data.conversationId}\n` +
-                  `source=${observation.source || 'DOM'}\n` +
-                  `incomingMessages=${observation.messages.length}\n` +
-                  `[VERIFY:CANONICAL]\n` +
-                  `conversationId=${data.conversationId}\n` +
-                  `messageCount=${data.canonicalMessageCount}\n` +
-                  `[VERIFY:CANONICAL_PROTECTION]\n` +
-                  `before=${data.canonicalMessageCount}\n` +
-                  `domIncoming=${observation.messages.length}\n` +
-                  `after=${data.canonicalMessageCount}\n` +
-                  `action=NO_SHRINK\n` +
-                  `[VERIFY:INDEXEDDB]\n` +
-                  `conversationId=${data.conversationId}\n` +
-                  `storedMessageCount=${data.storedMessageCount}\n` +
-                  `[VERIFY:ESTIMATOR_INPUT]\n` +
-                  `canonicalMessageCount=${data.canonicalMessageCount}\n` +
-                  `domMessageCount=${observation.messages.length}\n` +
-                  `estimatorMessageCount=${data.canonicalMessageCount}\n` +
-                  `source=CANONICAL\n` +
-                  `[VERIFY:DERIVED]\n` +
-                  `conversationId=${data.conversationId}\n` +
-                  `canonicalMessageCount=${data.canonicalMessageCount}\n` +
-                  `derivedMessageCount=${data.canonicalMessageCount}\n` +
-                  `turnCount=${data.turns}\n` +
-                  `tokenCount=${data.tokens}`
-              );
-            }
-          });
-      });
-
-      console.log(`[Startup] Starting engine for ${adapter.id}.`);
-      engine.start();
-
-      // Network Intercept Bridge: Listen for conversation data from the MAIN-world
-      // network interceptor (networkDiscovery.content.ts). The MAIN world intercepts
-      // ChatGPT's own authenticated fetch and posts the mapping data via postMessage.
-      // We normalize it, store it in NetworkHistoryStore, and trigger acquisition.
+      // Network Intercept Bridge: Thin forwarder to background worker
       if (adapter.id === 'chatgpt') {
-        window.addEventListener('message', (event: MessageEvent) => {
-          // Security: only accept messages from this window
-          if (event.source !== window) return;
-          if (!event.data || event.data.type !== '__CTXTRACKER_NETWORK_CONVERSATION__') return;
+        logger.tracker('NETWORK_BRIDGE_READY');
 
-          const { conversationId, mapping, url: interceptedUrl } = event.data.payload;
+        const handleNetworkPayload = (payload: any) => {
+          if (!payload || !ctx.isValid) return;
+          const {
+            conversationId,
+            mapping,
+            url: interceptedUrl,
+            currentNode,
+            current_node,
+          } = payload;
+          if (!mapping || !conversationId) return;
 
-          if (!mapping || !conversationId) {
-            console.warn('[NetworkBridge] Received malformed conversation data');
-            return;
-          }
-
-          console.log(`[NetworkBridge] Received intercepted conversation: ${conversationId}`);
-
-          const rawNodeCount =
+          const rawNodes =
             typeof mapping === 'object' && mapping !== null ? Object.keys(mapping).length : 0;
 
-          // Normalize using the shared ChatGPT mapping parser
-          const messages = normalizeChatGPTMapping({ mapping });
+          logger.tracker('HISTORY_RECEIVED', {
+            conversationId: `chatgpt:${conversationId}`,
+            messages: rawNodes,
+          });
 
-          console.log(
-            `[NetworkHistory]\n` +
-              `Conversation ID: ${conversationId}\n` +
-              `Raw mapping nodes: ${rawNodeCount}\n` +
-              `Normalized messages: ${messages.length}\n` +
-              `[VERIFY:NETWORK]\n` +
-              `conversationId=${conversationId}\n` +
-              `messages=${messages.length}`
-          );
+          // Forward directly to background worker
+          messaging
+            .sendToBackground({
+              type: 'NETWORK_PAYLOAD',
+              payload: {
+                url: interceptedUrl || window.location.href,
+                conversationId,
+                mapping,
+                currentNode: currentNode || current_node || null,
+              },
+            })
+            .catch(() => {});
+        };
 
-          if (messages.length > 0) {
-            // Retain history in central NetworkHistoryStore for ConversationAcquirer
-            NetworkHistoryStore.set({
-              conversationId,
-              rawNodeCount,
-              messages,
-              timestamp: Date.now(),
-            });
+        // Flush any pending network items intercepted before main() initialization
+        const pendingQueue = (window as any).__CTXTRACKER_PENDING_NETWORK_CONVERSATIONS__;
+        if (Array.isArray(pendingQueue) && pendingQueue.length > 0) {
+          const queueItems = [...pendingQueue];
+          (window as any).__CTXTRACKER_PENDING_NETWORK_CONVERSATIONS__ = [];
+          for (const item of queueItems) {
+            handleNetworkPayload(item);
+          }
+        }
 
-            console.log(
-              `[VERIFY:NETWORK_TO_BACKGROUND]\n` +
-                `conversationId=${conversationId}\n` +
-                `messages=${messages.length}`
-            );
+        const networkListener = (event: MessageEvent) => {
+          if (!ctx.isValid) return;
+          if (event.source !== window) return;
+          if (!event.data || event.data.type !== '__CTXTRACKER_NETWORK_CONVERSATION__') return;
+          handleNetworkPayload(event.data.payload);
+        };
 
-            // Emit CONTENT_MUTATION directly to background for immediate canonical persistence
-            const observation: DOMObservation = {
-              platform: 'chatgpt',
-              threadId: conversationId,
-              url: interceptedUrl || window.location.href,
-              pageTitle: document.title,
-              messages,
-              isStreaming: false,
-              source: 'NETWORK',
-            };
+        window.addEventListener('message', networkListener);
 
-            messaging
-              .sendToBackground<{
-                conversationId?: string;
-                canonicalMessageCount?: number;
-                storedMessageCount?: number;
-                turns?: number;
-                tokens?: number;
-              }>({
-                type: 'CONTENT_MUTATION',
-                payload: observation,
-              })
-              .then((res) => {
-                const data = res?.data;
-                if (data) {
-                  console.log(
-                    `[VERIFY:CONVERSATION_MANAGER]\n` +
-                      `conversationId=${data.conversationId}\n` +
-                      `source=NETWORK\n` +
-                      `incomingMessages=${messages.length}\n` +
-                      `[VERIFY:CANONICAL]\n` +
-                      `conversationId=${data.conversationId}\n` +
-                      `messageCount=${data.canonicalMessageCount}\n` +
-                      `[VERIFY:INDEXEDDB]\n` +
-                      `conversationId=${data.conversationId}\n` +
-                      `storedMessageCount=${data.storedMessageCount}\n` +
-                      `[VERIFY:ESTIMATOR_INPUT]\n` +
-                      `canonicalMessageCount=${data.canonicalMessageCount}\n` +
-                      `domMessageCount=${messages.length}\n` +
-                      `estimatorMessageCount=${data.canonicalMessageCount}\n` +
-                      `source=CANONICAL\n` +
-                      `[VERIFY:DERIVED]\n` +
-                      `conversationId=${data.conversationId}\n` +
-                      `canonicalMessageCount=${data.canonicalMessageCount}\n` +
-                      `derivedMessageCount=${data.canonicalMessageCount}\n` +
-                      `turnCount=${data.turns}\n` +
-                      `tokenCount=${data.tokens}`
-                  );
-                }
-              });
+        ctx.onInvalidated(() => {
+          window.removeEventListener('message', networkListener);
+        });
+      }
 
-            // Trigger engine to run acquisition using NetworkInterceptStrategy
-            engine.triggerAcquisition('NetworkIntercept');
+      // Initialize Robust DOM Engine (Stateless telemetry observer) unless in network-only modes
+      const shouldRunEngine = perfMode === 'FULL' || perfMode === 'OBSERVER_ONLY';
+      if (shouldRunEngine) {
+        const engine = new RobustDOMEngine(adapter, (observation) => {
+          if (!ctx.isValid) return;
+          perfMetrics.runtimeMessages++;
+          messaging
+            .sendToBackground<{
+              conversationId?: string;
+              canonicalMessageCount?: number;
+              storedMessageCount?: number;
+              turns?: number;
+              tokens?: number;
+            }>({
+              type: 'CONTENT_MUTATION',
+              payload: observation,
+            })
+            .catch(() => {});
+        });
 
-            console.log(
-              `[NetworkBridge] Stored and dispatched initial network history for ${conversationId}`
-            );
-          } else {
-            console.warn(`[NetworkBridge] Normalization returned 0 messages for ${conversationId}`);
+        (window as any).__ACTIVE_ROBUST_DOM_ENGINE__ = engine;
+
+        ctx.onInvalidated(() => {
+          engine.dispose();
+          if ((window as any).__ACTIVE_ROBUST_DOM_ENGINE__ === engine) {
+            (window as any).__ACTIVE_ROBUST_DOM_ENGINE__ = null;
           }
         });
 
-        console.log(`[NetworkBridge] Listener registered for ChatGPT network intercept bridge`);
+        engine.start();
       }
 
-      // Mount the UI widget
-      await mountWidget(ctx);
-    } else {
-      console.log('[Startup] No matching AI platform adapter found for this URL.');
+      // Mount the UI widget only in FULL mode
+      if (perfMode === 'FULL') {
+        await mountWidget(ctx);
+      }
     }
   },
 });

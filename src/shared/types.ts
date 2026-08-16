@@ -10,6 +10,10 @@ export interface TokenEstimate {
   outputCount: number;
   confidence: number; // 0-1
   isStreaming: boolean;
+  baselineCount?: number;
+  liveDelta?: number;
+  liveUserTokens?: number;
+  liveAssistantTokens?: number;
 }
 
 export interface ContextHealthMetrics {
@@ -50,6 +54,20 @@ export interface Snapshot {
   summary: StructuredSummary | null;
 }
 
+export interface DerivedConversationState {
+  conversationId: string;
+  generation?: number;
+  version?: number;
+  platform: PlatformId | null;
+  status: HealthStatus;
+  tokenEstimate: TokenEstimate;
+  stats: ConversationStats;
+  currentSummary: StructuredSummary | null;
+  estimatedContext?: EstimatedContext;
+  summaryVersion?: number;
+  sourceVersion?: number;
+}
+
 export interface AppState {
   theme: 'dark' | 'light' | 'system';
   platform: PlatformId | null;
@@ -68,6 +86,10 @@ export interface AppState {
   trackingEnabled: boolean;
   onboardingComplete: boolean;
   snapshots: Snapshot[];
+
+  // Conversation Session Scoping
+  activeConversationId?: string | null;
+  derivedState?: Record<string, DerivedConversationState>;
 
   // Settings
   supportedPlatforms: {
@@ -96,4 +118,3 @@ export interface EstimatedContext {
   confidence?: number;
   estimationSource: string;
 }
-

@@ -3,13 +3,22 @@ import { browser } from 'wxt/browser';
 import { messaging } from '../messaging/client';
 import { storageLayer, defaultState } from '../storage';
 import { ExtensionMessage } from '../messaging/types';
-// TokenEngine is now offloaded to offscreen document
 import { SummaryEngine } from '../engines/summary';
 import { DegradationEngine } from '../engines/degradation';
-import { conversationManager } from '../core/ConversationManager';
-import { ContextEstimationEngine } from '../core/context-estimation/ContextEstimationEngine';
-
-const contextEstimationEngine = new ContextEstimationEngine();
+import { conversationManager, computeInputHash } from '../core/ConversationManager';
+import { normalizeChatGPTMapping } from '../core/acquisition/normalizeMapping';
+import { DOMObservation } from '../core/models';
+import {
+  publishCanonicalTokenResult,
+  projectActiveCanonicalTokens,
+  publishLiveTokenDelta,
+  JobContext,
+} from '../core/tokenPublisher';
+import { CanonicalDerivedStore, TokenLiveStore } from '../core/tokenStore';
+import { SessionGeneration } from '../core/sessionGeneration';
+import { chatgptRuntime, normalizeConversationId } from '../core/chatgptRuntime';
+import { logger, DEBUG_TRACKER } from '../shared/logger';
+import { getTrackerPerfMode, perfMetrics, startMeasure, endMeasure } from '../shared/perfMode';
 
 let creatingOffscreen: Promise<void> | null = null;
 
@@ -34,10 +43,51 @@ async function hasDocument() {
   }
   return false;
 }
-// Global cache for summary engines to enable incremental updates
-const summaryEngines: Record<string, SummaryEngine> = {};
 
+const summaryEngines: Record<string, SummaryEngine> = {};
 const degradationEngine = new DegradationEngine();
+
+// ==========================================
+// NETWORK PAYLOAD DEDUPLICATION
+// Prevents repeated normalization/merge/tokenization for the same response version.
+// Key: conversationId + nodeCount + currentNode
+// ==========================================
+const networkPayloadDedup = new Map<string, string>();
+const DEDUP_MAX_ENTRIES = 50;
+
+function isDuplicateNetworkPayload(
+  conversationId: string,
+  mapping: Record<string, any>,
+  currentNode?: string | null
+): boolean {
+  const nodeCount =
+    typeof mapping === 'object' && mapping !== null ? Object.keys(mapping).length : 0;
+  const dedupKey = `${conversationId}_${nodeCount}_${currentNode || ''}`;
+
+  if (
+    networkPayloadDedup.has(conversationId) &&
+    networkPayloadDedup.get(conversationId) === dedupKey
+  ) {
+    return true;
+  }
+
+  // Evict oldest entries if map is too large
+  if (networkPayloadDedup.size >= DEDUP_MAX_ENTRIES) {
+    const firstKey = networkPayloadDedup.keys().next().value;
+    if (firstKey !== undefined) {
+      networkPayloadDedup.delete(firstKey);
+    }
+  }
+
+  networkPayloadDedup.set(conversationId, dedupKey);
+  return false;
+}
+
+// ==========================================
+// STREAMING STATE PER CONVERSATION
+// Track whether each conversation was streaming to detect stream completion
+// ==========================================
+const streamingState = new Map<string, boolean>();
 
 interface SidePanelBrowser {
   sidePanel?: {
@@ -57,10 +107,234 @@ function getSummaryEngine(platformId: string): SummaryEngine {
   return summaryEngines[platformId];
 }
 
-export default defineBackground(() => {
-  console.log('[Startup] AI Context Tracker: Background Service Worker initialized');
+/**
+ * Processes a FULL canonical observation (network history or stream completion).
+ * This performs the complete pipeline: merge → tokenize → summarize → persist.
+ */
+async function processCanonicalObservation(observation: DOMObservation, tabId?: number) {
+  // Skip processing 0-message observations
+  if (!observation.messages || observation.messages.length === 0) {
+    return { success: false, error: 'Empty observation skipped' };
+  }
 
-  // Enable session storage access for content scripts (Crucial for WXT HMR and runtime state)
+  const perfMode = getTrackerPerfMode();
+  if (perfMode === 'DISABLED') {
+    return { success: false, error: 'Disabled by TRACKER_PERF_MODE' };
+  }
+
+  // 1. Perform canonical merge
+  startMeasure('tracker:canonicalMerge');
+  const { conversation, addedCount, updatedCount } =
+    await conversationManager.processMutation(observation);
+  const mergeDuration = endMeasure('tracker:canonicalMerge');
+  if (DEBUG_TRACKER) {
+    logger.perf('canonicalMerge', mergeDuration);
+  }
+  const fullMessages = conversation.orderedMessageIds.map((id) => conversation.messages[id]);
+
+  if (observation.source === 'NETWORK') {
+    logger.tracker('HISTORY_ACQUIRED', {
+      conversationId: conversation.id,
+      messages: fullMessages.length,
+    });
+  }
+
+  logger.tracker('CANONICAL_UPDATED', {
+    conversationId: conversation.id,
+    messageCount: conversation.orderedMessageIds.length,
+  });
+
+  // In NETWORK_ONLY, NETWORK_CANONICAL, or OBSERVER_ONLY modes:
+  if (
+    perfMode === 'NETWORK_ONLY' ||
+    perfMode === 'OBSERVER_ONLY' ||
+    perfMode === 'NETWORK_CANONICAL'
+  ) {
+    return {
+      success: true,
+      data: {
+        conversationId: conversation.id,
+        canonicalMessageCount: conversation.orderedMessageIds.length,
+        storedMessageCount: conversation.orderedMessageIds.length,
+        turns: fullMessages.filter((m) => m.role === 'user').length || 1,
+        tokens: 0,
+      },
+    };
+  }
+
+  const state = await storageLayer.appState.getValue(tabId);
+  const limit = state.stats.contextLimit;
+  const turns = fullMessages.filter((m) => m.role === 'user').length || 1;
+
+  // ==========================================
+  // CANONICAL SNAPSHOT OR COMPLETED TURN: Tokenize Canonical Conversation
+  // ==========================================
+  if (observation.source === 'NETWORK' || addedCount > 0 || updatedCount > 0) {
+    if (observation.source !== 'NETWORK') {
+      logger.tracker(
+        'canonical updated',
+        `${conversation.id} (v${conversation.version}, ${fullMessages.length} messages)`
+      );
+    }
+
+    await setupOffscreenDocument('/offscreen.html');
+
+    const jobId = `job_can_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const inputVersion = conversation.version;
+    const inputHash = computeInputHash(fullMessages);
+    const generation = SessionGeneration.getGeneration();
+
+    const jobContext: JobContext = {
+      jobId,
+      conversationId: conversation.id,
+      conversationVersion: inputVersion,
+      inputHash,
+      inputMessageCount: fullMessages.length,
+      generation,
+    };
+
+    let estimate = { totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, confidence: 0 };
+    try {
+      perfMetrics.tokenJobs++;
+      startMeasure('tracker:tokenization');
+      const tokenResponse = (await browser.runtime.sendMessage({
+        type: 'TOKENIZE_REQUEST',
+        payload: {
+          jobContext,
+          platformId: observation.platform,
+          maxContext: limit,
+          messages: fullMessages,
+        },
+      })) as {
+        jobContext: JobContext;
+        estimate: typeof estimate;
+      };
+      estimate = tokenResponse?.estimate || estimate;
+      const tokDuration = endMeasure('tracker:tokenization');
+      if (DEBUG_TRACKER) {
+        logger.perf('tokenization', tokDuration);
+      }
+    } catch (err) {
+      logger.error('Tokenization offscreen request failed', err);
+    }
+
+    let currentSummary = state.currentSummary;
+    if (turns >= 3) {
+      perfMetrics.summaryJobs++;
+      const summaryEngine = getSummaryEngine(observation.platform);
+      currentSummary = summaryEngine.processIncremental(fullMessages);
+    }
+
+    const healthScore = degradationEngine.evaluate({
+      messages: fullMessages,
+      totalTokens: estimate.totalTokens,
+      contextLimit: limit,
+      thresholds: state.thresholds,
+    });
+
+    // Clear live deltas since canonical baseline now encompasses everything
+    TokenLiveStore.clearLiveDeltas(conversation.id);
+
+    console.log(
+      `[TOKEN]\nconversationId=${conversation.id}\nmessageCount=${conversation.orderedMessageIds.length}\ntokenCount=${estimate.totalTokens}`
+    );
+
+    await publishCanonicalTokenResult(jobContext, {
+      tokenCount: estimate.totalTokens,
+      inputTokens: estimate.totalInputTokens,
+      outputTokens: estimate.totalOutputTokens,
+      confidence: estimate.confidence,
+      isStreaming: false,
+      source: observation.source === 'NETWORK' ? 'network_history' : 'canonical',
+      platform: observation.platform,
+      status: healthScore.status,
+      currentSummary,
+      turns,
+      avgTokensPerTurn: turns > 0 ? estimate.totalTokens / turns : 0,
+      healthMetrics: degradationEngine.toLegacyMetrics(healthScore),
+      tabId,
+    });
+
+    return {
+      success: true,
+      data: {
+        conversationId: conversation.id,
+        canonicalMessageCount: conversation.orderedMessageIds.length,
+        storedMessageCount: conversation.orderedMessageIds.length,
+        turns,
+        tokens: estimate.totalTokens,
+      },
+    };
+  }
+
+  return { success: true };
+}
+
+/**
+ * Processes a LIVE streaming observation — single message only.
+ * Updates TokenLiveStore with the streaming message's token count.
+ * Publishes displayed total = baseline + live delta.
+ * Does NOT re-tokenize the full conversation.
+ */
+async function processLiveStreamingMutation(observation: DOMObservation, tabId?: number) {
+  if (!observation.messages || observation.messages.length === 0) {
+    return { success: false, error: 'Empty live mutation' };
+  }
+
+  const perfMode = getTrackerPerfMode();
+  if (perfMode === 'DISABLED' || perfMode === 'NETWORK_ONLY' || perfMode === 'NETWORK_CANONICAL') {
+    return { success: false, error: 'Live tracking disabled in this mode' };
+  }
+
+  const conversationId =
+    observation.conversationId ||
+    `${observation.platform}:${observation.threadId || observation.url}`;
+  const msg = observation.messages[observation.messages.length - 1]; // Latest message
+
+  if (!msg || !msg.text) {
+    return { success: true };
+  }
+
+  // Check if text actually changed (cheap length-based check)
+  if (!TokenLiveStore.hasMessageChanged(conversationId, msg.id, msg.text.length)) {
+    return { success: true };
+  }
+
+  // Quick heuristic token estimate for the single message (4 chars ≈ 1 token)
+  // This avoids the overhead of the offscreen tokenizer for streaming chunks
+  const quickTokenEstimate = Math.ceil(msg.text.length / 4);
+
+  // Update live store with this message's token count
+  // For cumulative streaming: previous=300, new=450 → stored as 450 (not 300+450)
+  TokenLiveStore.updateMessageDelta(
+    conversationId,
+    msg.id,
+    msg.role as 'user' | 'ai',
+    quickTokenEstimate,
+    msg.text.length
+  );
+
+  // Also merge incrementally into canonical store (text update only, no version bump for streaming)
+  await conversationManager.processMutation(observation);
+
+  // Publish displayed total = baseline + live delta
+  await publishLiveTokenDelta(conversationId, tabId);
+
+  return {
+    success: true,
+    data: {
+      conversationId,
+      canonicalMessageCount: 0, // Not re-counted during streaming
+      storedMessageCount: 0,
+      turns: 0,
+      tokens: 0, // Live delta is tracked separately
+    },
+  };
+}
+
+export default defineBackground(() => {
+  logger.tracker('initialized');
+
   if (
     typeof chrome !== 'undefined' &&
     chrome.storage &&
@@ -69,19 +343,19 @@ export default defineBackground(() => {
   ) {
     chrome.storage.session
       .setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })
-      .catch(console.error);
+      .catch((err) => logger.warn('Failed to set storage access level', err));
   }
 
-  // Initialize storage on install if needed
   browser.runtime.onInstalled.addListener(async (details) => {
     if (details.reason === 'install') {
-      console.log('[Startup] Extension installed, initializing default state.');
+      logger.tracker('installed');
       await storageLayer.appState.setValue(defaultState);
 
-      // Ensure the side panel opens when clicking the extension action icon
       const sidePanel = getSidePanelApi();
       if (sidePanel) {
-        await sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
+        await sidePanel
+          .setPanelBehavior({ openPanelOnActionClick: true })
+          .catch((err) => logger.warn('Failed to set sidePanel behavior', err));
       }
     }
   });
@@ -90,10 +364,11 @@ export default defineBackground(() => {
     await storageLayer.activeTabId.setValue(activeInfo.tabId);
   });
 
-  // Re-verify side panel behavior on startup just in case
   const sidePanel = getSidePanelApi();
   if (sidePanel) {
-    sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(console.error);
+    sidePanel
+      .setPanelBehavior({ openPanelOnActionClick: true })
+      .catch((err) => logger.warn('Failed to set sidePanel behavior', err));
   }
 
   // Main Event Router
@@ -108,241 +383,155 @@ export default defineBackground(() => {
         return state;
       }
 
-      case 'CONTENT_MUTATION': {
-        const observation = message.payload;
-        console.log(
-          `[Context] Received DOM_OBSERVATION with ${observation.messages.length} messages for platform: ${observation.platform}`
-        );
+      case 'SET_ACTIVE_CONVERSATION': {
+        const tabId =
+          typeof sender === 'object' && sender !== null && 'tab' in sender
+            ? (sender as { tab?: { id?: number } }).tab?.id
+            : undefined;
+        const { conversationId } = message.payload;
+        const prevState = await storageLayer.appState.getValue(tabId);
+        const oldConvId = prevState.activeConversationId || 'none';
 
-        // 1. Let the ConversationManager perform the canonical merge
-        const conversation = await conversationManager.processMutation(observation);
+        if (conversationId.startsWith('chatgpt:')) {
+          const normOld = normalizeConversationId(oldConvId);
+          const normNew = normalizeConversationId(conversationId);
+          const currentActive = chatgptRuntime.getState().activeConversationId;
 
-        // 2. Map back to array for downstream engines
-        const fullMessages = conversation.orderedMessageIds.map((id) => conversation.messages[id]);
+          if (normNew && normNew !== normOld && normNew !== currentActive) {
+            SessionGeneration.switchConversation(normNew);
+            if (tabId) {
+              await storageLayer.activeTabId.setValue(tabId);
+            }
+            await chatgptRuntime.handleConversationSwitch(normNew, tabId);
+          }
+        } else if (oldConvId !== conversationId) {
+          // Increment generation epoch on conversation switch
+          const newGen = SessionGeneration.switchConversation(conversationId);
+
+          if (tabId) {
+            await storageLayer.activeTabId.setValue(tabId);
+          }
+
+          // Other platforms: Check in-memory or canonical DB
+          const inMem = CanonicalDerivedStore.get(conversationId);
+          if (inMem && inMem.tokenCount > 0) {
+            SessionGeneration.setReady(conversationId, newGen, inMem.canonicalVersion);
+            await projectActiveCanonicalTokens(conversationId, tabId);
+          } else {
+            const canonical = await conversationManager.getConversation(conversationId);
+            if (canonical && canonical.tokenEstimate && canonical.tokenEstimate.count > 0) {
+              CanonicalDerivedStore.set({
+                conversationId,
+                canonicalVersion: canonical.version,
+                messageCount: canonical.orderedMessageIds.length,
+                tokenCount: canonical.tokenEstimate.count,
+                inputTokens: canonical.tokenEstimate.inputCount,
+                outputTokens: canonical.tokenEstimate.outputCount,
+                confidence: canonical.tokenEstimate.confidence,
+                turns: canonical.stats.turns,
+                status: 'healthy',
+                healthMetrics: canonical.stats.healthMetrics || {},
+                currentSummary: canonical.summary || null,
+                timestamp: Date.now(),
+              });
+              SessionGeneration.setReady(conversationId, newGen, canonical.version);
+              await projectActiveCanonicalTokens(conversationId, tabId);
+            } else {
+              await projectActiveCanonicalTokens(conversationId, tabId);
+            }
+          }
+        }
+        return { success: true };
+      }
+
+      case 'NETWORK_PAYLOAD': {
+        const { conversationId, mapping, currentNode, url } = message.payload;
+        if (!mapping || !conversationId) {
+          return { success: false, error: 'Invalid network payload' };
+        }
+
+        // DEDUPLICATION: Skip if this exact response version was already processed
+        if (isDuplicateNetworkPayload(conversationId, mapping, currentNode)) {
+          return { success: true, data: { deduplicated: true } };
+        }
 
         const tabId =
           typeof sender === 'object' && sender !== null && 'tab' in sender
             ? (sender as { tab?: { id?: number } }).tab?.id
             : undefined;
 
-        // 3. Get current state to read thresholds and context limit
-        const state = await storageLayer.appState.getValue(tabId);
-        const limit = state.stats.contextLimit;
-
-        // 4. Ensure Offscreen Document exists and send Tokenize Request
-        // (We do this even while streaming to keep token count live)
-        await setupOffscreenDocument('/offscreen.html');
-
-        let estimate: {
-          totalTokens: number;
-          totalInputTokens: number;
-          totalOutputTokens: number;
-          confidence: number;
-        };
-        try {
-          console.log(
-            `[LLM] Requesting tokenization offscreen for ${fullMessages.length} messages.`
-          );
-          estimate = (await browser.runtime.sendMessage({
+        // Tokenization worker bridge
+        const tokenizeMessages = async (msgs: any[]) => {
+          await setupOffscreenDocument('/offscreen.html');
+          const state = await storageLayer.appState.getValue(tabId);
+          const limit = state.stats.contextLimit || 128000;
+          const tokenResponse = (await browser.runtime.sendMessage({
             type: 'TOKENIZE_REQUEST',
             payload: {
-              platformId: observation.platform,
+              jobContext: {
+                jobId: `job_net_${Date.now()}`,
+                conversationId: `chatgpt:${conversationId}`,
+                conversationVersion: 1,
+                inputHash: '',
+                inputMessageCount: msgs.length,
+                generation: SessionGeneration.getGeneration(),
+              },
+              platformId: 'chatgpt',
               maxContext: limit,
-              messages: fullMessages,
+              messages: msgs,
             },
-          })) as typeof estimate;
-        } catch (err) {
-          console.error('[LLM] Tokenization failed:', err);
-          estimate = { totalTokens: 0, totalInputTokens: 0, totalOutputTokens: 0, confidence: 0 };
-        }
+          })) as {
+            estimate?: { totalTokens: number; totalInputTokens: number; totalOutputTokens: number };
+          };
+          return (
+            tokenResponse?.estimate || {
+              totalTokens: msgs.reduce((s, m) => s + Math.ceil((m.text?.length || 0) / 4), 0),
+              totalInputTokens: 0,
+              totalOutputTokens: 0,
+            }
+          );
+        };
 
-        // 5. Run Summary Engine
-        // Optimization: Only run summary if NOT streaming, to save CPU and LLM costs
-        let currentSummary = state.currentSummary;
-        const turns = fullMessages.filter((m) => m.role === 'user').length || 1;
-        const autoSummaryThreshold = 3;
-
-        if (!observation.isStreaming) {
-          if (turns >= autoSummaryThreshold) {
-            console.log(
-              `[Summary] Triggering summary engine for ${observation.platform}. Turns: ${turns}`
-            );
-            const summaryEngine = getSummaryEngine(observation.platform);
-            currentSummary = summaryEngine.processIncremental(fullMessages);
-          }
-        } else {
-          console.log(`[Summary] Skipped summary generation (isStreaming = true)`);
-        }
-
-        // 6. Calculate live health from full conversation history
-        const healthScore = degradationEngine.evaluate({
-          messages: fullMessages,
-          totalTokens: estimate.totalTokens,
-          contextLimit: limit,
-          thresholds: state.thresholds,
-        });
-
-        // 7. Context Estimation
-        const totalUserChars = fullMessages
-          .filter((m) => m.role === 'user')
-          .reduce((acc, m) => acc + m.text.length, 0);
-        const totalAssistantChars = fullMessages
-          .filter((m) => m.role === 'ai')
-          .reduce((acc, m) => acc + m.text.length, 0);
-        const totalChars = totalUserChars + totalAssistantChars || 1;
-
-        const userRatio = totalUserChars / totalChars;
-        const assistantRatio = totalAssistantChars / totalChars;
-
-        const totalUserTokens = estimate.totalTokens * userRatio;
-        const totalAssistantTokens = estimate.totalTokens * assistantRatio;
-
-        const userMsgCount = fullMessages.filter((m) => m.role === 'user').length || 1;
-        const assistantMsgCount = fullMessages.filter((m) => m.role === 'ai').length || 1;
-
-        const averageUserTokens = totalUserTokens / userMsgCount;
-        const averageAssistantTokens = totalAssistantTokens / assistantMsgCount;
-
-        console.log(
-          `[ScrollContainerInvestigation][ContextEstimationEngine Input Trace]\n` +
-            `Source Payload: CONTENT_MUTATION sent from processDOM\n` +
-            `DOM Path Source: Processed by processDOM in content script\n` +
-            `scrollHeight: ${observation.scrollHeight || 0}\n` +
-            `clientHeight: ${observation.clientHeight || 0}\n` +
-            `scrollTop: ${observation.scrollTop || 0}\n` +
-            `platform: ${observation.platform}\n` +
-            `url: ${observation.url}`
-        );
-
-        console.log(
-          `[VERIFY:ESTIMATOR_INPUT]\n` +
-            `source=CANONICAL\n` +
-            `canonicalMessageCount=${conversation.orderedMessageIds.length}\n` +
-            `domMessageCount=${observation.messages.length}\n` +
-            `estimatorMessageCount=${conversation.orderedMessageIds.length}`
-        );
-
-        const estimatedContext = contextEstimationEngine.estimate({
-          observedConversation: conversation,
-          observedTokens: estimate.totalTokens,
-          observedTurns: turns,
-          visibleMessageCount: observation.messages.length,
-          averageUserTokens,
-          averageAssistantTokens,
-          scrollTop: observation.scrollTop || 0,
-          scrollHeight: observation.scrollHeight || 0,
-          viewportHeight: observation.clientHeight || 0,
-          platform: observation.platform,
-          conversationId: conversation.id,
-          currentUrl: observation.url,
-        });
-
-        console.log(`[Investigation 2 - Estimator wiring]
-Stage: After estimation in background.ts
-conversationId: ${conversation.id}
-visibleMessageCount: ${observation.messages.length}
-scrollTop: ${observation.scrollTop || 0}
-scrollHeight: ${observation.scrollHeight || 0}
-clientHeight: ${observation.clientHeight || 0}
-estimatedTurns: ${estimatedContext.estimatedTurns}
-estimatedTokens: ${estimatedContext.estimatedTokens}
-confidence: ${estimatedContext.confidence ?? 1.0}`);
-
-        // 8. Update the centralized Derived State (AppState)
-        await storageLayer.updateAppState(
-          {
-            tokenEstimate: {
-              count: estimate.totalTokens,
-              inputCount: estimate.totalInputTokens,
-              outputCount: estimate.totalOutputTokens,
-              confidence: estimate.confidence,
-              isStreaming: observation.isStreaming,
-            },
-            platform: observation.platform,
-            status: healthScore.status,
-            currentSummary,
-            stats: {
-              ...state.stats,
-              turns,
-              avgTokensPerTurn: estimate.totalTokens / turns,
-              healthMetrics: degradationEngine.toLegacyMetrics(healthScore),
-            },
-            estimatedContext,
-          },
+        const totalTokens = await chatgptRuntime.handleNetworkPayload(
+          { conversationId, mapping, currentNode, url },
+          tokenizeMessages,
           tabId
-        );
-
-        console.log(
-          `[Investigation 2 - Estimator wiring] Stage: AppState updated for ${conversation.id}`
-        );
-        console.log(
-          `[VERIFY:DERIVED]\n` +
-            `conversationId=${conversation.id}\n` +
-            `canonicalMessageCount=${conversation.orderedMessageIds.length}\n` +
-            `derivedMessageCount=${fullMessages.length}\n` +
-            `turnCount=${turns}\n` +
-            `tokenCount=${estimate.totalTokens}`
         );
 
         return {
           success: true,
           data: {
-            conversationId: conversation.id,
-            canonicalMessageCount: conversation.orderedMessageIds.length,
-            storedMessageCount: conversation.orderedMessageIds.length,
-            turns,
-            tokens: estimate.totalTokens,
+            conversationId: `chatgpt:${conversationId}`,
+            tokens: totalTokens,
           },
         };
       }
 
-      case 'UPDATE_TOKEN_COUNT': {
+      case 'CONTENT_MUTATION': {
+        const observation = message.payload;
         const tabId =
           typeof sender === 'object' && sender !== null && 'tab' in sender
             ? (sender as { tab?: { id?: number } }).tab?.id
             : undefined;
-        // Legacy fallback or direct UI override
-        const { count, platform } = message.payload;
-        await storageLayer.updateAppState(
-          {
-            tokenEstimate: {
-              count,
-              inputCount: count / 2,
-              outputCount: count / 2,
-              confidence: 0.95,
-              isStreaming: false,
+
+        if (observation.platform === 'chatgpt') {
+          // ChatGPT: Lightweight live in-memory update (no IDB, no canonical DB)
+          const totalTokens = await chatgptRuntime.handleLiveMutation(observation, tabId);
+          return {
+            success: true,
+            data: {
+              conversationId: observation.conversationId,
+              tokens: totalTokens,
             },
-            platform,
-          },
-          tabId
-        );
-        return { success: true };
-      }
-
-      case 'REGENERATE_SUMMARY': {
-        // We can't synchronously resolve the URL from here without querying the tab,
-        // but typically REGENERATE_SUMMARY is fired when the UI is open.
-        // In a full implementation we'd pass conversationId from the UI.
-        console.warn('REGENERATE_SUMMARY requires conversationId in new architecture.');
-        return { success: false, error: 'Not fully implemented in redesign' };
-      }
-
-      case 'OPEN_SIDE_PANEL': {
-        const tabId =
-          typeof sender === 'object' && sender !== null && 'tab' in sender
-            ? (sender as { tab?: { id?: number } }).tab?.id
-            : undefined;
-        const currentSidePanel = getSidePanelApi();
-        if (currentSidePanel && tabId) {
-          await currentSidePanel.open({ tabId });
-          return { success: true };
+          };
         }
-        return { success: false, error: 'Side panel API not available or no tab ID' };
+
+        // Other platforms: Canonical persistence pipeline
+        return await processCanonicalObservation(observation, tabId);
       }
 
       default:
-        console.warn('[Background] Unhandled message type:', message.type);
-        return { success: false, error: 'Unhandled message type' };
+        return { success: false, error: 'Unknown message type' };
     }
   });
 });

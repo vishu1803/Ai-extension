@@ -1,6 +1,7 @@
+import { logger, DEBUG_TRACKER } from '../shared/logger';
+
 /**
  * A utility to debounce DOM mutations.
- * Returns a function that triggers the callback after `delay` ms of no invocations.
  */
 export function debounce<T extends (...args: unknown[]) => void>(func: T, delay: number) {
   let timeoutId: ReturnType<typeof setTimeout>;
@@ -16,7 +17,7 @@ export function debounce<T extends (...args: unknown[]) => void>(func: T, delay:
  * Extracts innerText from a list of DOM elements and joins them with newlines.
  */
 export function extractTextFromElements(selectors: string): string {
-  const elements = document.querySelectorAll(selectors);
+  const elements = safeQuerySelectorAll(selectors);
   const textChunks: string[] = [];
   elements.forEach((el) => {
     const text = (el as HTMLElement).innerText;
@@ -26,7 +27,7 @@ export function extractTextFromElements(selectors: string): string {
 }
 
 /**
- * Safely executes querySelectorAll handling non-standard pseudo-selectors like :has-text()
+ * Safely executes querySelectorAll handling non-standard pseudo-selectors like :has-text() and :contains()
  * and preventing unhandled SyntaxErrors from interrupting execution.
  */
 export function safeQuerySelectorAll(
@@ -34,18 +35,27 @@ export function safeQuerySelectorAll(
   parent: Element | Document = document
 ): Element[] {
   try {
-    if (selector.includes(':has-text(')) {
-      const match = selector.match(/^(.*?):has-text\((['"]?)(.*?)\2\)$/);
+    if (!selector || typeof selector !== 'string') return [];
+
+    if (selector.includes(':has-text(') || selector.includes(':contains(')) {
+      const match = selector.match(/:(?:has-text|contains)\((['"]?)(.*?)\1\)/);
       if (match) {
-        const baseSelector = match[1].trim();
-        const searchText = match[3];
-        const baseElements = Array.from(parent.querySelectorAll(baseSelector || '*'));
-        return baseElements.filter((el) => el.textContent?.includes(searchText));
+        const fullPseudo = match[0];
+        const searchText = match[2];
+        const baseSelector = selector.replace(fullPseudo, '').trim() || '*';
+        try {
+          const baseElements = Array.from(parent.querySelectorAll(baseSelector));
+          return baseElements.filter((el) => el.textContent?.includes(searchText));
+        } catch {
+          const all = Array.from(parent.querySelectorAll('*'));
+          return all.filter((el) => el.textContent?.includes(searchText));
+        }
       }
     }
+
     return Array.from(parent.querySelectorAll(selector));
   } catch (err) {
-    console.warn(`[safeQuerySelectorAll] Invalid selector avoided: "${selector}"`, err);
+    logger.warn(`Invalid selector avoided: "${selector}"`);
     return [];
   }
 }
@@ -58,9 +68,6 @@ export function safeQuerySelector(
   return elements.length > 0 ? elements[0] : null;
 }
 
-/**
- * Diagnostic Scroll Container Inspection Utilities
- */
 export function getDOMPath(el: Element | null): string {
   if (!el) return 'null';
   const path: string[] = [];
@@ -79,101 +86,13 @@ export function getDOMPath(el: Element | null): string {
   return path.join(' > ');
 }
 
-interface TrackedElement extends Element {
-  __scroll_tracker_id?: string;
-}
-
-interface CustomWindow extends Window {
-  __scroll_tracker_counter?: number;
-  __lastScrollContainers?: Record<string, Element | null>;
-}
-
-declare const window: CustomWindow;
-
-export function getOrAssignElementId(el: Element | null): string {
-  if (!el) return 'NULL_ELEMENT';
-  const trackedEl = el as TrackedElement;
-  if (!trackedEl.__scroll_tracker_id) {
-    const idCount = (window.__scroll_tracker_counter = (window.__scroll_tracker_counter || 0) + 1);
-    const id = `SCROLL_NODE_${idCount}`;
-    trackedEl.__scroll_tracker_id = id;
-    try {
-      el.setAttribute('data-scroll-tracker-id', id);
-    } catch {
-      // ignore in case element DOM is restricted
-    }
-  }
-  return trackedEl.__scroll_tracker_id;
-}
-
 export function tagAllCandidateScrollContainers(): void {
-  const selectors = [
-    'div[class*="react-scroll-to-bottom"]',
-    'div[class*="react-scroll-to-bottom--css"]',
-    'main div.overflow-y-auto',
-    'div.overflow-y-auto',
-    'main',
-    '[role="main"]',
-    'body',
-    'html',
-  ];
-  selectors.forEach((sel) => {
-    document.querySelectorAll(sel).forEach((el) => {
-      getOrAssignElementId(el);
-    });
-  });
+  // Utility for tagging candidate scroll containers
 }
 
 export function inspectScrollContainer(el: Element | null, componentName: string): void {
-  if (!el) {
-    console.log(`[ScrollContainerInvestigation][${componentName}] Element: NULL`);
-    return;
-  }
-  const trackerId = getOrAssignElementId(el);
-  const domPath = getDOMPath(el);
-  const computedStyle = window.getComputedStyle(el);
-  const rect = el.getBoundingClientRect();
-
-  window.__lastScrollContainers = window.__lastScrollContainers || {};
-  window.__lastScrollContainers[componentName] = el;
-
+  if (!el || !DEBUG_TRACKER) return;
   console.log(
-    `[ScrollContainerInvestigation][${componentName}]\n` +
-      `Element Tracker ID: ${trackerId}\n` +
-      `DOM Path: ${domPath}\n` +
-      `tagName: <${el.tagName.toLowerCase()}>\n` +
-      `className: "${el.className || ''}"\n` +
-      `overflow-y: ${computedStyle.overflowY}\n` +
-      `scrollHeight: ${el.scrollHeight}\n` +
-      `clientHeight: ${el.clientHeight}\n` +
-      `scrollTop: ${el.scrollTop}\n` +
-      `boundingClientRect: { top: ${Math.round(rect.top)}, left: ${Math.round(rect.left)}, width: ${Math.round(rect.width)}, height: ${Math.round(rect.height)} }`
+    `[ScrollContainer][${componentName}] <${el.tagName.toLowerCase()}> scrollHeight=${el.scrollHeight}`
   );
-
-  const otherComponent =
-    componentName === 'ConversationReadyDetector' ? 'processDOM' : 'ConversationReadyDetector';
-  const otherEl = window.__lastScrollContainers[otherComponent];
-  if (otherEl) {
-    const sameInstance = el === otherEl;
-    const readyDetEl = window.__lastScrollContainers.ConversationReadyDetector || null;
-    const procDomEl = window.__lastScrollContainers.processDOM || null;
-    console.log(
-      `[ScrollContainerComparison] ${componentName} vs ${otherComponent}\n` +
-        `Same Element Instance (===): ${sameInstance ? 'YES (TRUE)' : 'NO (FALSE)'}\n` +
-        `Current (${componentName}): ${trackerId} [${el.scrollHeight}px / ${el.clientHeight}px]\n` +
-        `Other (${otherComponent}): ${getOrAssignElementId(otherEl)} [${otherEl.scrollHeight}px / ${otherEl.clientHeight}px]`
-    );
-    if (!sameInstance) {
-      console.warn(
-        `[ScrollContainerDiscrepancyReport] Component Discrepancy Found!\n` +
-          `ConversationReadyDetector Element: ${getOrAssignElementId(readyDetEl)} ` +
-          `Path: "${getDOMPath(readyDetEl)}" ` +
-          `[scrollHeight=${readyDetEl?.scrollHeight}, clientHeight=${readyDetEl?.clientHeight}]\n` +
-          `processDOM Element: ${getOrAssignElementId(procDomEl)} ` +
-          `Path: "${getDOMPath(procDomEl)}" ` +
-          `[scrollHeight=${procDomEl?.scrollHeight}, clientHeight=${procDomEl?.clientHeight}]\n` +
-          `REPORT: ConversationReadyDetector and processDOM reference DIFFERENT elements!`
-      );
-    }
-  }
 }

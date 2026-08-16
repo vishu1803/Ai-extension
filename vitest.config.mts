@@ -1,16 +1,10 @@
 import { defineConfig } from 'vitest/config';
-import { WxtVitest } from 'wxt/testing';
 
 export default defineConfig({
-  plugins: [WxtVitest()],
   test: {
     environment: 'happy-dom',
     globals: true,
     setupFiles: ['./src/__tests__/setup.ts'],
-    server: {
-      deps: {
-        inline: ['wxt', 'wxt/testing']
-      }
-    }
+    exclude: ['**/e2e/**', '**/node_modules/**'],
   }
 });

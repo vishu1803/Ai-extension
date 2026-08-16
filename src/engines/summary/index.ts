@@ -1,6 +1,7 @@
 import { ChatMessage } from '../../adapters/engineTypes';
 import { StructuredSummary, defaultSummary } from './types';
 import { ExtractiveSummarizer } from './extractive';
+import { DEBUG_TRACKER } from '../../shared/logger';
 
 export class SummaryEngine {
   private summary: StructuredSummary;
@@ -26,12 +27,20 @@ export class SummaryEngine {
     const newMessages = messages.filter((m) => !this.processedMessageIds.has(m.id));
 
     if (newMessages.length === 0) {
-      console.log(`[Summary] No new messages to process. Returning existing summary.`);
+      if (DEBUG_TRACKER) {
+        console.log(`[Summary] No new messages to process. Returning existing summary.`);
+      }
       return this.summary;
     }
-    
-    console.log(`[Context] Deduplicated messages. Found ${newMessages.length} new messages out of ${messages.length} total.`);
-    console.log(`[Summary] Starting heuristic extraction and TF-IDF on ${newMessages.length} new messages.`);
+
+    if (DEBUG_TRACKER) {
+      console.log(
+        `[Context] Deduplicated messages. Found ${newMessages.length} new messages out of ${messages.length} total.`
+      );
+      console.log(
+        `[Summary] Starting heuristic extraction and TF-IDF on ${newMessages.length} new messages.`
+      );
+    }
 
     // Process each new message for heuristic extraction
     for (const msg of newMessages) {
