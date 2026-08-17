@@ -91,10 +91,19 @@ export class ConversationManager {
       let addedCount = 0;
       let updatedCount = 0;
 
-      // 2. Deterministic Merge Logic
-      if (observation.source === 'NETWORK') {
-        // Authoritative network history is canonical ground truth.
-        // Replaces any preliminary DOM scrapings captured during SPA transitions.
+      // 2. Deterministic Merge Logic with Completeness Verification
+      //
+      // FULL + NETWORK: Authoritative replacement of canonical message list.
+      //   Only permitted when tree-path verification confirmed a contiguous
+      //   root-to-leaf path in the node mapping DAG.
+      //
+      // PARTIAL + NETWORK: Non-destructive merge. The payload is a subtree
+      //   (e.g., title generation, moderation, branch metadata with ~4 nodes).
+      //   Never resets conversation.messages or the committed baseline.
+      //
+      // DOM / INCREMENTAL: Live streaming merge, same as PARTIAL behavior.
+      if (observation.source === 'NETWORK' && observation.completeness === 'FULL') {
+        // Authoritative FULL history replacement
         conversation.messages = {};
         conversation.orderedMessageIds = [];
         for (const msg of observation.messages) {
@@ -105,7 +114,7 @@ export class ConversationManager {
         }
         conversation.version += 1;
       } else {
-        // Live incremental mutations (streaming turns / user prompt submissions)
+        // PARTIAL network history or INCREMENTAL DOM observation -> Non-destructive Merge
         for (const msg of observation.messages) {
           msg.conversationId = conversationId;
           const existing = conversation.messages[msg.id];

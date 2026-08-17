@@ -31,6 +31,9 @@ export default defineContentScript({
       if (status !== 200 || !bodyText) return;
 
       try {
+        // Fast pre-check: skip 5MB-20MB JSON.parse if it obviously lacks mapping
+        if (!bodyText.includes('"mapping"')) return;
+
         // Single JSON.parse — no double-parsing
         const data = JSON.parse(bodyText);
         if (!data || typeof data !== 'object' || Array.isArray(data)) return;
@@ -61,18 +64,18 @@ export default defineContentScript({
             currentNode: data.current_node || null,
           });
 
-          // Post message to ISOLATED content script window
-          window.postMessage(
-            {
-              type: '__CTXTRACKER_NETWORK_CONVERSATION__',
-              payload: {
+          // Dispatch targeted CustomEvent instead of window.postMessage
+          // This avoids waking up all other 'message' event listeners on the page (e.g. React, Next.js, telemetry)
+          // which were causing [Violation] 'message' handler took 1300ms.
+          document.dispatchEvent(
+            new CustomEvent('__CTXTRACKER_NETWORK_CONVERSATION__', {
+              detail: {
                 url,
                 conversationId: data.conversation_id,
                 mapping: data.mapping,
                 currentNode: data.current_node || null,
               },
-            },
-            '*'
+            })
           );
         }
       } catch {
@@ -80,7 +83,7 @@ export default defineContentScript({
       }
     }
 
-    // Intercept window.fetch
+    // Intercept window.fetch (completely non-blocking for page requests)
     const originalFetch = window.fetch;
     window.fetch = async function (...args) {
       const resource = args[0];
@@ -94,14 +97,20 @@ export default defineContentScript({
       const response = await originalFetch.apply(this, args);
 
       if (isConversationEndpoint(url)) {
-        if ((window as any).__TRACKER_PERF_MODE__ === 'DISABLED') {
-          return response;
+        if ((window as any).__TRACKER_PERF_MODE__ !== 'DISABLED') {
+          try {
+            const clone = response.clone();
+            // Process body asynchronously without delaying fetch completion
+            clone
+              .text()
+              .then((bodyText) => {
+                setTimeout(() => {
+                  processResponseBody(url, response.status, bodyText);
+                }, 0);
+              })
+              .catch(() => {});
+          } catch {}
         }
-        try {
-          const clone = response.clone();
-          const bodyText = await clone.text();
-          processResponseBody(url, response.status, bodyText);
-        } catch {}
       }
 
       return response;
@@ -119,7 +128,12 @@ export default defineContentScript({
     XMLHttpRequest.prototype.send = function (this: any, body?: any) {
       this.addEventListener('load', function (this: any) {
         if (isConversationEndpoint(this._nd_url)) {
-          processResponseBody(this._nd_url, this.status, this.responseText);
+          const reqUrl = this._nd_url;
+          const status = this.status;
+          const text = this.responseText;
+          setTimeout(() => {
+            processResponseBody(reqUrl, status, text);
+          }, 0);
         }
       });
       return originalSend.apply(this, arguments as any);

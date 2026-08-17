@@ -3,6 +3,18 @@ import { StructuredSummary } from '../engines/summary/types';
 
 export type MessageRole = 'user' | 'ai' | 'system';
 
+/**
+ * History Completeness Classification for network payloads.
+ *
+ * FULL:        Authoritative root-to-leaf path verified in node mapping DAG.
+ *              Permitted to replace canonical message list and committed baseline.
+ * PARTIAL:     Missing root node, disconnected subtree, or trailing fragment.
+ *              Non-destructive merge only — never resets messages or baseline.
+ * INCREMENTAL: Live DOM mutation or single streaming chunk.
+ *              Routes exclusively to TokenLiveStore for delta computation.
+ */
+export type HistoryCompleteness = 'FULL' | 'PARTIAL' | 'INCREMENTAL' | 'UNKNOWN';
+
 export interface ChatMessage {
   id: string;
   conversationId?: string;
@@ -61,6 +73,7 @@ export interface DOMObservation {
   isStreaming: boolean;
   model?: string;
   source?: 'NETWORK' | 'DOM';
+  completeness?: HistoryCompleteness;
   scrollTop?: number;
   scrollHeight?: number;
   clientHeight?: number;

@@ -6,7 +6,10 @@ import { ExtensionMessage } from '../messaging/types';
 import { SummaryEngine } from '../engines/summary';
 import { DegradationEngine } from '../engines/degradation';
 import { conversationManager, computeInputHash } from '../core/ConversationManager';
-import { normalizeChatGPTMapping } from '../core/acquisition/normalizeMapping';
+import {
+  normalizeChatGPTMapping,
+  verifyAndNormalizeMapping,
+} from '../core/acquisition/normalizeMapping';
 import { DOMObservation } from '../core/models';
 import {
   publishCanonicalTokenResult,
@@ -397,7 +400,7 @@ export default defineBackground(() => {
           const normNew = normalizeConversationId(conversationId);
           const currentActive = chatgptRuntime.getState().activeConversationId;
 
-          if (normNew && normNew !== normOld && normNew !== currentActive) {
+          if (normNew && (normNew !== normOld || normNew !== currentActive)) {
             SessionGeneration.switchConversation(normNew);
             if (tabId) {
               await storageLayer.activeTabId.setValue(tabId);

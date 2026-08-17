@@ -1,7 +1,8 @@
 import { storageLayer } from '../storage';
 import { logger } from '../shared/logger';
 import { DOMObservation } from './models';
-import { normalizeChatGPTMapping } from './acquisition/normalizeMapping';
+import { normalizeChatGPTMapping, verifyAndNormalizeMapping } from './acquisition/normalizeMapping';
+import { CanonicalDerivedStore, TokenLiveStore } from './tokenStore';
 
 /**
  * Normalizes any conversation ID or URL into canonical "chatgpt:<uuid>" or "chatgpt:<id>".
@@ -80,6 +81,11 @@ async function publishTokenDisplay(
   const liveTokens = activeRuntime.liveUserTokens + activeRuntime.activeAssistantTokens;
   const displayedTokens = activeRuntime.historicalTokens + liveTokens;
   const conversationId = activeRuntime.activeConversationId || 'unknown';
+
+  // [UI] structured diagnostic log
+  console.log(
+    `[UI]\nbaseline=${activeRuntime.historicalTokens}\nlive=${liveTokens}\ndisplayed=${displayedTokens}`
+  );
 
   // [DISPLAY] log (Exact specification)
   console.log(
@@ -175,22 +181,65 @@ export const chatgptRuntime = {
     if (messageIds.length > 0) {
       activeRuntime.historicalMessageIds = new Set(messageIds);
     }
+
+    CanonicalDerivedStore.set({
+      conversationId: normId,
+      canonicalVersion: 1,
+      messageCount: messageIds.length || 1,
+      tokenCount: tokens,
+      inputTokens: Math.floor(tokens / 2),
+      outputTokens: Math.ceil(tokens / 2),
+      confidence: 1,
+      turns: 1,
+      status: 'healthy',
+      healthMetrics: {},
+      currentSummary: null,
+      timestamp: Date.now(),
+    });
   },
 
   setLiveUserTokens(tokens: number, messageId: string = 'msg-user'): void {
     activeRuntime.liveUserTokens = tokens;
     activeRuntime.activeUserMessageId = messageId;
     activeRuntime.activeUserContentHash = `${messageId}:${tokens}`;
+    if (activeRuntime.activeConversationId) {
+      TokenLiveStore.updateMessageDelta(
+        activeRuntime.activeConversationId,
+        messageId,
+        'user',
+        tokens,
+        tokens * 4
+      );
+    }
   },
 
   /**
    * Called on conversation navigation (A -> B).
-   * Resets the runtime state and updates UI to 0 until B network history arrives.
+   * Restores cached canonical baseline immediately if known, or resets to 0.
    */
   async handleConversationSwitch(conversationId: string, tabId?: number): Promise<void> {
     const normId = normalizeConversationId(conversationId);
     if (activeRuntime.activeConversationId !== normId) {
-      this.reset(normId, true);
+      const cached = CanonicalDerivedStore.get(normId);
+      if (cached && cached.tokenCount > 0) {
+        activeRuntime = {
+          activeConversationId: normId,
+          historicalTokens: cached.tokenCount,
+          historicalMessageIds: new Set<string>(),
+          liveUserTokens: 0,
+          activeAssistantTokens: 0,
+          activeAssistantMessageId: null,
+          activeAssistantContentHash: null,
+          activeUserMessageId: null,
+          activeUserContentHash: null,
+          lastLoggedModel: null,
+          lastStatus: 'IDLE',
+        };
+      } else {
+        this.reset(normId, true);
+      }
+
+      TokenLiveStore.clearLiveDeltas(normId);
 
       logger.tracker('conversation changed', {
         conversationId: normId,
@@ -202,7 +251,10 @@ export const chatgptRuntime = {
 
   /**
    * NETWORK HISTORY: Historical source of truth.
-   * Sets historicalTokens, records historical message IDs, and resets liveTokens to 0.
+   *
+   * Uses tree-path verification to classify payloads:
+   * - FULL: Sets historicalTokens, commits to CanonicalDerivedStore, resets liveTokens to 0.
+   * - PARTIAL / UNKNOWN: Non-destructive merge only — does NOT modify historicalTokens or live state.
    */
   async handleNetworkPayload(
     payload: {
@@ -218,11 +270,41 @@ export const chatgptRuntime = {
   ): Promise<number> {
     const normId = normalizeConversationId(payload.conversationId);
 
-    const messages = normalizeChatGPTMapping({
-      mapping: payload.mapping,
-      conversation_id: payload.conversationId,
-      current_node: payload.currentNode || null,
-    });
+    // Tree-path verification: classify as FULL or PARTIAL
+    const existingDerived = CanonicalDerivedStore.get(normId);
+    const currentCanonicalCount =
+      existingDerived?.messageCount ||
+      (activeRuntime.activeConversationId === normId ? activeRuntime.historicalMessageIds.size : 0);
+
+    const verified = verifyAndNormalizeMapping(
+      {
+        mapping: payload.mapping,
+        conversation_id: payload.conversationId,
+        current_node: payload.currentNode || null,
+      },
+      currentCanonicalCount
+    );
+
+    // PARTIAL or UNKNOWN payload: Do NOT reset historical baseline.
+    if (verified.completeness === 'PARTIAL' || verified.completeness === 'UNKNOWN') {
+      console.log(
+        `[HISTORY]\nconversation=${normId}\nsource=NETWORK\nmessages=${verified.messages.length}\ncompleteness=${verified.completeness}\ncanonicalMessages=${currentCanonicalCount}\naction=MERGE`
+      );
+      console.log(
+        `[NETWORK_${verified.completeness}] conversationId=${normId} nodes=${Object.keys(payload.mapping || {}).length} messages=${verified.messages.length} — baseline preserved`
+      );
+
+      // If we have an existing baseline, return the current displayed total unchanged
+      if (existingDerived && existingDerived.tokenCount > 0) {
+        return this.getDisplayedTotal();
+      }
+
+      if (activeRuntime.historicalTokens > 0) {
+        return this.getDisplayedTotal();
+      }
+    }
+
+    const messages = verified.messages;
 
     let historicalTokens = 0;
     let inputTokens = 0;
@@ -252,10 +334,37 @@ export const chatgptRuntime = {
     activeRuntime.activeUserContentHash = null;
     activeRuntime.lastStatus = 'IDLE';
 
+    const turns = messages.filter((m) => m.role === 'user').length || 1;
+
+    // Commit authoritative canonical baseline to CanonicalDerivedStore
+    CanonicalDerivedStore.set({
+      conversationId: normId,
+      canonicalVersion: 1,
+      messageCount: messages.length,
+      tokenCount: historicalTokens,
+      inputTokens,
+      outputTokens,
+      confidence: 1,
+      turns,
+      status: 'healthy',
+      healthMetrics: {},
+      currentSummary: null,
+      timestamp: Date.now(),
+    });
+    TokenLiveStore.clearLiveDeltas(normId);
+
+    console.log(
+      `[HISTORY]\nconversation=${normId}\nsource=NETWORK\nmessages=${messages.length}\ncompleteness=FULL\ncanonicalMessages=${messages.length}\naction=COMMIT`
+    );
+    console.log(
+      `[TOKEN_BASELINE]\nconversation=${normId}\nbaseline=${historicalTokens}\nsource=FULL_VERIFIED`
+    );
+
     logger.tracker('history', {
       conversationId: normId,
       messages: messages.length,
       tokens: historicalTokens,
+      completeness: verified.completeness,
     });
 
     // Detect model from mapping if present
@@ -270,7 +379,6 @@ export const chatgptRuntime = {
       }
     }
 
-    const turns = messages.filter((m) => m.role === 'user').length || 1;
     return await publishTokenDisplay({
       turns,
       inputTokens,
@@ -346,9 +454,20 @@ export const chatgptRuntime = {
         activeRuntime.liveUserTokens = msgTokens;
         hasChange = true;
 
+        TokenLiveStore.updateMessageDelta(
+          activeRuntime.activeConversationId || normId,
+          msg.id,
+          'user',
+          msgTokens,
+          msg.text.length
+        );
+
         // [LIVE_USER] log (Exact specification)
         console.log(
           `[LIVE_USER]\nconversationId=${activeRuntime.activeConversationId || normId}\nmessageId=${msg.id}\ntokens=${msgTokens}`
+        );
+        console.log(
+          `[LIVE]\nconversation=${activeRuntime.activeConversationId || normId}\nuser=${activeRuntime.liveUserTokens}\nassistant=${activeRuntime.activeAssistantTokens}\ntotal=${activeRuntime.liveUserTokens + activeRuntime.activeAssistantTokens}`
         );
 
         logger.tracker('live', {
@@ -379,9 +498,20 @@ export const chatgptRuntime = {
         activeRuntime.lastStatus = currentStatus;
         hasChange = true;
 
+        TokenLiveStore.updateMessageDelta(
+          activeRuntime.activeConversationId || normId,
+          msg.id,
+          'ai',
+          msgTokens,
+          msg.text.length
+        );
+
         // [LIVE_AI] log (Exact specification)
         console.log(
           `[LIVE_AI]\nconversationId=${activeRuntime.activeConversationId || normId}\nmessageId=${msg.id}\ntokens=${msgTokens}\nstatus=${currentStatus}`
+        );
+        console.log(
+          `[LIVE]\nconversation=${activeRuntime.activeConversationId || normId}\nuser=${activeRuntime.liveUserTokens}\nassistant=${activeRuntime.activeAssistantTokens}\ntotal=${activeRuntime.liveUserTokens + activeRuntime.activeAssistantTokens}`
         );
 
         logger.tracker('live', {

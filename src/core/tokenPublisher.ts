@@ -226,6 +226,9 @@ export async function projectActiveCanonicalTokens(
   }
 }
 
+const liveDeltaThrottles = new Map<string, number>();
+const liveDeltaTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 /**
  * Publishes live streaming token state: baseline + live delta.
  * Called during active streaming when individual messages are updated.
@@ -233,8 +236,40 @@ export async function projectActiveCanonicalTokens(
  *
  * This NEVER re-tokenizes the full conversation. Only the changed message's
  * token count is passed in by the caller.
+ *
+ * Uses a 100ms throttle/debounce to prevent storage & UI thrashing.
  */
 export async function publishLiveTokenDelta(
+  conversationId: string,
+  tabId?: number
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (liveDeltaTimers.has(conversationId)) {
+      clearTimeout(liveDeltaTimers.get(conversationId)!);
+    }
+
+    const now = Date.now();
+    const lastUpdate = liveDeltaThrottles.get(conversationId) || 0;
+
+    const execute = async () => {
+      liveDeltaThrottles.set(conversationId, Date.now());
+      liveDeltaTimers.delete(conversationId);
+      const res = await _executePublishLiveTokenDelta(conversationId, tabId);
+      resolve(res);
+    };
+
+    if (now - lastUpdate < 100) {
+      // Schedule to run after the throttle window
+      const timer = setTimeout(execute, 100);
+      liveDeltaTimers.set(conversationId, timer);
+    } else {
+      // Execute immediately
+      execute();
+    }
+  });
+}
+
+async function _executePublishLiveTokenDelta(
   conversationId: string,
   tabId?: number
 ): Promise<boolean> {

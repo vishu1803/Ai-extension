@@ -32,7 +32,7 @@ function extractMessageMeta(el: Element, index: number): { id: string; role: 'us
   } else if (roleAttr === 'assistant' || roleAttr === 'ai') {
     role = 'ai';
   } else {
-    const text = (el as HTMLElement).innerText || '';
+    const text = (el as HTMLElement).textContent || '';
     const html = el.innerHTML || '';
     if (el.classList.contains('whitespace-pre-wrap') && !el.classList.contains('prose')) {
       role = 'user';
@@ -75,7 +75,8 @@ function extractMessageMeta(el: Element, index: number): { id: string; role: 'us
  * Extracts text from a single message element.
  */
 function extractSingleMessageText(el: Element): string {
-  return (el as HTMLElement).innerText?.trim() || '';
+  // Use textContent to avoid synchronous layout thrashing (innerText forces a reflow)
+  return (el as HTMLElement).textContent?.trim() || '';
 }
 
 export class RobustDOMEngine {
@@ -93,6 +94,7 @@ export class RobustDOMEngine {
   private mutationPending: boolean = false;
   private isNavigating: boolean = false;
   private quietMode: boolean = false;
+  private messageContainer: Element | null = null;
   private acquirer: ConversationAcquirer;
   private readyDetector: ConversationReadyDetector;
   private conversationReady: boolean = false;
@@ -467,34 +469,54 @@ export class RobustDOMEngine {
       // === THIN OBSERVATION: Find only the latest message elements ===
       perfMetrics.domQueries++;
       const selectors = this.adapter.domSelectors || ['[data-message-author-role]', 'article'];
-      let matchingNodes: Element[] = [];
+      let candidateElements: Element[] = [];
 
-      const rootContainer =
-        safeQuerySelector('main') || (typeof document !== 'undefined' ? document.body : null);
+      // O(1) trailing node traversal using cached container
+      if (this.messageContainer && this.messageContainer.isConnected) {
+        const children = this.messageContainer.children;
+        const lastTwo = Array.from(children).slice(-2);
+        candidateElements = lastTwo
+          .map((child) => {
+            if (child.matches && child.matches(selectors[0])) return child;
+            return child.querySelector(selectors[0]) || child;
+          })
+          .filter(Boolean) as Element[];
+      }
 
-      if (rootContainer) {
-        for (const selector of selectors) {
-          perfMetrics.domQueries++;
-          const matches = rootContainer.querySelectorAll(selector);
-          if (matches.length > 0) {
-            matchingNodes = Array.from(matches);
-            break;
+      // Fallback: Full query and cache the container for next time
+      if (candidateElements.length === 0) {
+        const rootContainer =
+          safeQuerySelector('main') || (typeof document !== 'undefined' ? document.body : null);
+
+        if (rootContainer) {
+          for (const selector of selectors) {
+            perfMetrics.domQueries++;
+            const matches = rootContainer.querySelectorAll(selector);
+            if (matches.length > 0) {
+              const matchingNodes = Array.from(matches);
+              candidateElements = matchingNodes.slice(-2);
+
+              // Cache the parent container of the last message for O(1) traversal next time
+              const lastMatch = matchingNodes[matchingNodes.length - 1];
+              if (lastMatch && lastMatch.parentElement) {
+                this.messageContainer = lastMatch.parentElement;
+              }
+              break;
+            }
           }
         }
       }
 
-      if (matchingNodes.length === 0) {
+      if (candidateElements.length === 0) {
         this.isChecking = false;
         return;
       }
 
-      // Check the latest messages (up to last 2: user and/or assistant)
-      const candidateElements = matchingNodes.slice(-2);
       const observedMessages: ChatMessage[] = [];
 
       for (let i = 0; i < candidateElements.length; i++) {
         const el = candidateElements[i];
-        const meta = extractMessageMeta(el, matchingNodes.length - candidateElements.length + i);
+        const meta = extractMessageMeta(el, i);
         if (!meta) continue;
         const text = extractSingleMessageText(el);
         if (!text) continue;

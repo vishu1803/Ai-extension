@@ -112,17 +112,17 @@ export default defineContentScript({
           }
         }
 
-        const networkListener = (event: MessageEvent) => {
+        const networkListener = (event: Event) => {
           if (!ctx.isValid) return;
-          if (event.source !== window) return;
-          if (!event.data || event.data.type !== '__CTXTRACKER_NETWORK_CONVERSATION__') return;
-          handleNetworkPayload(event.data.payload);
+          const customEvent = event as CustomEvent;
+          if (!customEvent.detail) return;
+          handleNetworkPayload(customEvent.detail);
         };
 
-        window.addEventListener('message', networkListener);
+        document.addEventListener('__CTXTRACKER_NETWORK_CONVERSATION__', networkListener);
 
         ctx.onInvalidated(() => {
-          window.removeEventListener('message', networkListener);
+          document.removeEventListener('__CTXTRACKER_NETWORK_CONVERSATION__', networkListener);
         });
       }
 

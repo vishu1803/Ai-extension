@@ -116,23 +116,23 @@ export const chatGptAdapter: PlatformAdapter = {
       if (slug) return slug;
     }
 
-    // 2. Check model selector dropdown / button
+    // 2. Check model selector dropdown / button (using textContent to prevent forced reflow)
     const modelBtn = safeQuerySelector(
       'button[data-testid="model-switcher-button"], button[data-testid="model-selector-dropdown"], div[class*="model-selector"]'
     );
     if (modelBtn) {
-      const text = (modelBtn as HTMLElement).innerText?.trim();
+      const text = (modelBtn as HTMLElement).textContent?.trim();
       if (text && text.length > 0 && text.length < 50) {
         return text;
       }
     }
 
-    // 3. Check header model badge
+    // 3. Check header model badge (using textContent to prevent forced reflow)
     const headerBadge = safeQuerySelector(
       'header span[class*="font-semibold"], [data-testid="model-name"]'
     );
     if (headerBadge) {
-      const text = (headerBadge as HTMLElement).innerText?.trim();
+      const text = (headerBadge as HTMLElement).textContent?.trim();
       if (text && text.length > 0 && text.length < 50) {
         return text;
       }
