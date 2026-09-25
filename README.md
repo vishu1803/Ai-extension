@@ -3,7 +3,6 @@
 A privacy-first, event-driven browser extension (Manifest V3) built with **WXT** and **Preact** to monitor, estimate, and analyze LLM chat context limits (tokens and turns) in real-time.
 
 ---
-
 ## Key Features
 
 - **Multi-Platform Adapters**: Scrapes and handles chat threads on major AI platforms (ChatGPT, Claude, Gemini, Perplexity, Grok).
