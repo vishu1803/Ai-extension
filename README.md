@@ -13,7 +13,6 @@ A privacy-first, event-driven browser extension (Manifest V3) built with **WXT**
 - **Zero-Network Policy (Privacy-First)**: Enforces strict Content Security Policy (`connect-src 'none'`) ensuring all tokenization, context evaluations, and summaries remain 100% local.
 
 ---
-
 ## Folder Structure
 
 ```text
