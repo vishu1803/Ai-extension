@@ -11,7 +11,6 @@ A privacy-first, event-driven browser extension (Manifest V3) built with **WXT**
 - **Context Estimation Engine**: Estimates turns and token count on partially virtualized DOM containers using Simple, Scrollbar, and Hybrid (weighted average of scroll ratio and visible message density) estimators.
 - **Local History Acquisition**: Reconstructs conversations by merging historical hydration data with real-time DOM updates.
 - **Zero-Network Policy (Privacy-First)**: Enforces strict Content Security Policy (`connect-src 'none'`) ensuring all tokenization, context evaluations, and summaries remain 100% local.
-
 ---
 ## Folder Structure
 
